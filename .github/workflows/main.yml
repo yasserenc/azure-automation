@@ -2,10 +2,6 @@ name: Azure OIDC Test
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - azure-probe.trigger
 
 permissions:
   id-token: write
@@ -22,14 +18,6 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Prove Azure create/read/delete access
-        run: |
-          set -euo pipefail
-          RG="rg-chatgpt-proof-20260829-9f3c"
-          LOCATION="westeurope"
-          az account show --output json
-          az group create --name "$RG" --location "$LOCATION" --tags purpose=chatgpt-connector-proof managed-by=github-actions --output json
-          az group show --name "$RG" --output json
-          az group delete --name "$RG" --yes
-          test "$(az group exists --name "$RG")" = "false"
-          echo "AZURE_CREATE_READ_DELETE_PROOF=PASS"
+      - run: |
+          az account show
+          az group list --output table
