@@ -1,6 +1,7 @@
-name: Azure OIDC Test
+name: Create Azure Resource Group
 
 on:
+  push:
   workflow_dispatch:
 
 permissions:
@@ -8,16 +9,21 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  create:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: azure/login@v3
+      - name: Azure login
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - run: |
-          az account show
-          az group list --output table
+      - name: Create and verify resource group
+        run: |
+          set -euo pipefail
+          RG='So-Funny-Resource-Group'
+          az group create --name "$RG" --location westeurope --tags display-name='So Funny Resource Group' managed-by='ChatGPT-via-GitHub' >/dev/null
+          test "$(az group exists --name "$RG" -o tsv)" = "true"
+          test "$(az group show --name "$RG" --query properties.provisioningState -o tsv)" = "Succeeded"
+          az group show --name "$RG" --query '{name:name,location:location,provisioningState:properties.provisioningState,tags:tags}' -o json
