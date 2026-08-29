@@ -1,23 +1,83 @@
-name: Azure OIDC Test
+name: Azure Multi-Account OIDC
+
+run-name: Azure target - ${{ inputs.azure_target }}
 
 on:
   workflow_dispatch:
+    inputs:
+      azure_target:
+        description: "Azure account"
+        required: true
+        type: choice
+        options:
+          - rfcy
+          - wdt
+          - altaaf
+          - oamal
+          - alban
+          - Ulfah
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  test:
+  azure:
+    name: Azure - ${{ inputs.azure_target }}
     runs-on: ubuntu-latest
 
     steps:
-      - uses: azure/login@v3
+      - name: Login - rfcy
+        if: ${{ inputs.azure_target == 'rfcy' }}
+        uses: azure/login@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
 
-      - run: |
-          az account show
-          az group list --output table
+      - name: Login - wdt
+        if: ${{ inputs.azure_target == 'wdt' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_wdt }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_wdt }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+
+      - name: Login - altaaf
+        if: ${{ inputs.azure_target == 'altaaf' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_altaaf }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_altaaf }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+
+      - name: Login - oamal
+        if: ${{ inputs.azure_target == 'oamal' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_oamal }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_oamal }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+
+      - name: Login - alban
+        if: ${{ inputs.azure_target == 'alban' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_alban }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_alban }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_alban }}
+
+      - name: Login - Ulfah
+        if: ${{ inputs.azure_target == 'Ulfah' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Verify Azure login
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account get-access-token --query expiresOn -o tsv >/dev/null
+          echo "Azure OIDC login verified for target: ${{ inputs.azure_target }}"
