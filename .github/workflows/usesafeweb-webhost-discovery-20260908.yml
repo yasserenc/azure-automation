@@ -1,0 +1,132 @@
+name: UseSafeWeb web-host read-only discovery 20260908
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/usesafeweb-webhost-discovery-20260908.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  discover:
+    name: Discover 20.71.90.212 - ${{ matrix.azure_target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        azure_target: [rfcy, wdt, altaaf, oamal, alban, Ulfah]
+
+    steps:
+      - name: Login - rfcy
+        if: ${{ matrix.azure_target == 'rfcy' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+
+      - name: Login - wdt
+        if: ${{ matrix.azure_target == 'wdt' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_wdt }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_wdt }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+
+      - name: Login - altaaf
+        if: ${{ matrix.azure_target == 'altaaf' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_altaaf }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_altaaf }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+
+      - name: Login - oamal
+        if: ${{ matrix.azure_target == 'oamal' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_oamal }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_oamal }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+
+      - name: Login - alban
+        if: ${{ matrix.azure_target == 'alban' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_alban }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_alban }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_alban }}
+
+      - name: Login - Ulfah
+        if: ${{ matrix.azure_target == 'Ulfah' }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Discover matching public IP and attached VM
+        shell: bash
+        env:
+          AZURE_TARGET: ${{ matrix.azure_target }}
+          TARGET_IP: 20.71.90.212
+        run: |
+          set -Eeuo pipefail
+          az account get-access-token --query expiresOn -o tsv >/dev/null
+
+          match_json="$(az network public-ip list --query "[?ipAddress=='${TARGET_IP}']" -o json)"
+          count="$(jq 'length' <<<"$match_json")"
+          if [[ "$count" == "0" ]]; then
+            echo "MATCH=NO target=${AZURE_TARGET}"
+            exit 0
+          fi
+          if [[ "$count" != "1" ]]; then
+            echo "MATCH=AMBIGUOUS target=${AZURE_TARGET} count=${count}"
+            exit 2
+          fi
+
+          pip_name="$(jq -r '.[0].name' <<<"$match_json")"
+          pip_rg="$(jq -r '.[0].resourceGroup' <<<"$match_json")"
+          ipconfig_id="$(jq -r '.[0].ipConfiguration.id // empty' <<<"$match_json")"
+
+          echo "MATCH=YES target=${AZURE_TARGET}"
+          echo "PUBLIC_IP=${TARGET_IP}"
+          echo "PUBLIC_IP_RESOURCE=${pip_name}"
+          echo "PUBLIC_IP_RESOURCE_GROUP=${pip_rg}"
+
+          if [[ -z "$ipconfig_id" ]]; then
+            echo "ATTACHMENT=UNRESOLVED"
+            exit 0
+          fi
+
+          nic_name="$(awk -F/ '{for(i=1;i<=NF;i++) if(tolower($i)=="networkinterfaces") {print $(i+1); exit}}' <<<"$ipconfig_id")"
+          nic_rg="$(awk -F/ '{for(i=1;i<=NF;i++) if(tolower($i)=="resourcegroups") {print $(i+1); exit}}' <<<"$ipconfig_id")"
+          [[ -n "$nic_name" && -n "$nic_rg" ]]
+          echo "NIC=${nic_name}"
+          echo "NIC_RESOURCE_GROUP=${nic_rg}"
+
+          vm_id="$(az network nic show -g "$nic_rg" -n "$nic_name" --query 'virtualMachine.id' -o tsv)"
+          if [[ -z "$vm_id" ]]; then
+            echo "VM=UNRESOLVED"
+            exit 0
+          fi
+
+          vm_name="$(awk -F/ '{for(i=1;i<=NF;i++) if(tolower($i)=="virtualmachines") {print $(i+1); exit}}' <<<"$vm_id")"
+          vm_rg="$(awk -F/ '{for(i=1;i<=NF;i++) if(tolower($i)=="resourcegroups") {print $(i+1); exit}}' <<<"$vm_id")"
+          [[ -n "$vm_name" && -n "$vm_rg" ]]
+
+          vm_json="$(az vm get-instance-view -g "$vm_rg" -n "$vm_name" -o json)"
+          os_type="$(az vm show -g "$vm_rg" -n "$vm_name" --query 'storageProfile.osDisk.osType' -o tsv)"
+          power_state="$(jq -r '[.instanceView.statuses[]? | select(.code | startswith("PowerState/")) | .displayStatus][0] // "unknown"' <<<"$vm_json")"
+
+          echo "VM=${vm_name}"
+          echo "VM_RESOURCE_GROUP=${vm_rg}"
+          echo "VM_OS_TYPE=${os_type}"
+          echo "VM_POWER_STATE=${power_state}"
+          echo "DISCOVERY=PASS"
