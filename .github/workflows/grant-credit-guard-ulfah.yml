@@ -19,7 +19,7 @@ permissions:
 
 env:
   CREDIT_THRESHOLD_USD: "50"
-  ENFORCEMENT_ENABLED: "false"
+  ENFORCEMENT_ENABLED: "true"
 
 jobs:
   guard:
@@ -219,3 +219,13 @@ jobs:
             echo ""
             echo "> No resources were deleted and the subscription was not canceled."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Raise emergency freeze alert
+        if: steps.gate.outputs.run == 'true' && steps.credit.outputs.trigger == 'true' && github.ref == 'refs/heads/main' && env.ENFORCEMENT_ENABLED == 'true'
+        shell: bash
+        env:
+          EFFECTIVE: ${{ steps.credit.outputs.effective_remaining }}
+        run: |
+          set -euo pipefail
+          echo "::error::Emergency compute freeze completed because conservative remaining Azure credit reached $EFFECTIVE USD (threshold: $CREDIT_THRESHOLD_USD USD)."
+          exit 40
