@@ -1,0 +1,49 @@
+name: Keep scheduled automation active
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/keep-scheduled-automation-active.yml
+  schedule:
+    # Public repositories lose scheduled workflows after 60 days without
+    # repository activity. A monthly heartbeat commit prevents that.
+    - cron: "43 05 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write repository activity heartbeat
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+
+          repo="$GITHUB_REPOSITORY"
+          path=".github/automation-heartbeat.txt"
+          timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          encoded="$(printf '%s\n' "$timestamp" | base64 -w0)"
+
+          current_sha="$(gh api "repos/$repo/contents/$path" --jq '.sha' 2>/dev/null || true)"
+
+          args=(
+            --method PUT
+            "repos/$repo/contents/$path"
+            -f message="chore: keep scheduled automation active"
+            -f content="$encoded"
+          )
+
+          if [[ -n "$current_sha" ]]; then
+            args+=(-f sha="$current_sha")
+          fi
+
+          gh api "${args[@]}" >/dev/null
+          echo "Heartbeat commit created at $timestamp."
