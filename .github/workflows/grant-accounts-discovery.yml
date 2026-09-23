@@ -1,0 +1,284 @@
+name: Grant accounts discovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/grant-accounts-discovery.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  discover:
+    name: Discover grant-capable Azure accounts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Initialize discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/grant-results.tsv"
+          printf 'target\tlogin\tbilling\tgrant\tnote\n' >> "$RUNNER_TEMP/grant-results.tsv"
+
+      - name: Login - rfcy
+        id: login_rfcy
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+
+      - name: Probe - rfcy
+        if: always()
+        shell: bash
+        env:
+          TARGET: rfcy
+          LOGIN_OUTCOME: ${{ steps.login_rfcy.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+        run: |
+          set -euo pipefail
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\tfail\tn/a\tno\toidc-login-failed\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+          else
+            billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors 2>/dev/null || true)"
+            sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property" 2>/dev/null || true)"
+            agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property" 2>/dev/null || true)"
+            account_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            profile_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            if [[ "$sku" != "Microsoft Azure Plan" || "$agreement" != "MicrosoftCustomerAgreement" || -z "$account_id" || -z "$profile_id" ]]; then
+              printf '%s\tpass\tfail\tno\tnot-supported-mca-credit-model\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+            else
+              ba="${account_id##*/billingAccounts/}"
+              bp="${profile_id##*/billingProfiles/}"
+              if az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$ba/billingProfiles/$bp/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors >/dev/null 2>&1; then
+                printf '%s\tpass\tpass\tyes\tcredit-api-readable\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              else
+                printf '%s\tpass\tfail\tunknown\tbilling-credit-read-denied\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              fi
+            fi
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - wdt
+        id: login_wdt
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_wdt }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_wdt }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+
+      - name: Probe - wdt
+        if: always()
+        shell: bash
+        env:
+          TARGET: wdt
+          LOGIN_OUTCOME: ${{ steps.login_wdt.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+        run: |
+          set -euo pipefail
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\tfail\tn/a\tno\toidc-login-failed\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+          else
+            billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors 2>/dev/null || true)"
+            sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property" 2>/dev/null || true)"
+            agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property" 2>/dev/null || true)"
+            account_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            profile_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            if [[ "$sku" != "Microsoft Azure Plan" || "$agreement" != "MicrosoftCustomerAgreement" || -z "$account_id" || -z "$profile_id" ]]; then
+              printf '%s\tpass\tfail\tno\tnot-supported-mca-credit-model\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+            else
+              ba="${account_id##*/billingAccounts/}"
+              bp="${profile_id##*/billingProfiles/}"
+              if az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$ba/billingProfiles/$bp/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors >/dev/null 2>&1; then
+                printf '%s\tpass\tpass\tyes\tcredit-api-readable\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              else
+                printf '%s\tpass\tfail\tunknown\tbilling-credit-read-denied\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              fi
+            fi
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - altaaf
+        id: login_altaaf
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_altaaf }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_altaaf }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+
+      - name: Probe - altaaf
+        if: always()
+        shell: bash
+        env:
+          TARGET: altaaf
+          LOGIN_OUTCOME: ${{ steps.login_altaaf.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+        run: |
+          set -euo pipefail
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\tfail\tn/a\tno\toidc-login-failed\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+          else
+            billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors 2>/dev/null || true)"
+            sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property" 2>/dev/null || true)"
+            agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property" 2>/dev/null || true)"
+            account_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            profile_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            if [[ "$sku" != "Microsoft Azure Plan" || "$agreement" != "MicrosoftCustomerAgreement" || -z "$account_id" || -z "$profile_id" ]]; then
+              printf '%s\tpass\tfail\tno\tnot-supported-mca-credit-model\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+            else
+              ba="${account_id##*/billingAccounts/}"
+              bp="${profile_id##*/billingProfiles/}"
+              if az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$ba/billingProfiles/$bp/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors >/dev/null 2>&1; then
+                printf '%s\tpass\tpass\tyes\tcredit-api-readable\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              else
+                printf '%s\tpass\tfail\tunknown\tbilling-credit-read-denied\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              fi
+            fi
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - oamal
+        id: login_oamal
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_oamal }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_oamal }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+
+      - name: Probe - oamal
+        if: always()
+        shell: bash
+        env:
+          TARGET: oamal
+          LOGIN_OUTCOME: ${{ steps.login_oamal.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+        run: |
+          set -euo pipefail
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\tfail\tn/a\tno\toidc-login-failed\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+          else
+            billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors 2>/dev/null || true)"
+            sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property" 2>/dev/null || true)"
+            agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property" 2>/dev/null || true)"
+            account_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            profile_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            if [[ "$sku" != "Microsoft Azure Plan" || "$agreement" != "MicrosoftCustomerAgreement" || -z "$account_id" || -z "$profile_id" ]]; then
+              printf '%s\tpass\tfail\tno\tnot-supported-mca-credit-model\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+            else
+              ba="${account_id##*/billingAccounts/}"
+              bp="${profile_id##*/billingProfiles/}"
+              if az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$ba/billingProfiles/$bp/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors >/dev/null 2>&1; then
+                printf '%s\tpass\tpass\tyes\tcredit-api-readable\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              else
+                printf '%s\tpass\tfail\tunknown\tbilling-credit-read-denied\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              fi
+            fi
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - alban
+        id: login_alban
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_alban }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_alban }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_alban }}
+
+      - name: Probe - alban
+        if: always()
+        shell: bash
+        env:
+          TARGET: alban
+          LOGIN_OUTCOME: ${{ steps.login_alban.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_alban }}
+        run: |
+          set -euo pipefail
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\tfail\tn/a\tno\toidc-login-failed\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+          else
+            billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors 2>/dev/null || true)"
+            sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property" 2>/dev/null || true)"
+            agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property" 2>/dev/null || true)"
+            account_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            profile_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            if [[ "$sku" != "Microsoft Azure Plan" || "$agreement" != "MicrosoftCustomerAgreement" || -z "$account_id" || -z "$profile_id" ]]; then
+              printf '%s\tpass\tfail\tno\tnot-supported-mca-credit-model\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+            else
+              ba="${account_id##*/billingAccounts/}"
+              bp="${profile_id##*/billingProfiles/}"
+              if az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$ba/billingProfiles/$bp/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors >/dev/null 2>&1; then
+                printf '%s\tpass\tpass\tyes\tcredit-api-readable\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              else
+                printf '%s\tpass\tfail\tunknown\tbilling-credit-read-denied\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              fi
+            fi
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - Ulfah
+        id: login_ulfah
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Probe - Ulfah
+        if: always()
+        shell: bash
+        env:
+          TARGET: Ulfah
+          LOGIN_OUTCOME: ${{ steps.login_ulfah.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+        run: |
+          set -euo pipefail
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\tfail\tn/a\tno\toidc-login-failed\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+          else
+            billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors 2>/dev/null || true)"
+            sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property" 2>/dev/null || true)"
+            agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property" 2>/dev/null || true)"
+            account_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            profile_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property" 2>/dev/null || true)"
+            if [[ "$sku" != "Microsoft Azure Plan" || "$agreement" != "MicrosoftCustomerAgreement" || -z "$account_id" || -z "$profile_id" ]]; then
+              printf '%s\tpass\tfail\tno\tnot-supported-mca-credit-model\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+            else
+              ba="${account_id##*/billingAccounts/}"
+              bp="${profile_id##*/billingProfiles/}"
+              if az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$ba/billingProfiles/$bp/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors >/dev/null 2>&1; then
+                printf '%s\tpass\tpass\tyes\tcredit-api-readable\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              else
+                printf '%s\tpass\tfail\tunknown\tbilling-credit-read-denied\n' "$TARGET" >> "$RUNNER_TEMP/grant-results.tsv"
+              fi
+            fi
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Summarize discovery
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Grant account discovery"
+            echo ""
+            echo "| Target | OIDC | Billing | Grant-capable | Note |"
+            echo "|---|---|---|---|---|"
+            tail -n +2 "$RUNNER_TEMP/grant-results.tsv" | while IFS=$'\t' read -r target login billing grant note; do
+              echo "| $target | $login | $billing | $grant | $note |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Discovery results:"
+          cat "$RUNNER_TEMP/grant-results.tsv"
