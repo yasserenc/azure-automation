@@ -34,16 +34,15 @@ jobs:
 
           current_sha="$(gh api "repos/$repo/contents/$path" --jq '.sha' 2>/dev/null || true)"
 
-          args=(
-            --method PUT
-            "repos/$repo/contents/$path"
-            -f message="chore: keep scheduled automation active"
-            -f content="$encoded"
-          )
-
           if [[ -n "$current_sha" ]]; then
-            args+=(-f sha="$current_sha")
+            gh api --method PUT "repos/$repo/contents/$path" \
+              -f message="chore: keep scheduled automation active" \
+              -f content="$encoded" \
+              -f sha="$current_sha" >/dev/null
+          else
+            gh api --method PUT "repos/$repo/contents/$path" \
+              -f message="chore: keep scheduled automation active" \
+              -f content="$encoded" >/dev/null
           fi
 
-          gh api "${args[@]}" >/dev/null
           echo "Heartbeat commit created at $timestamp."
