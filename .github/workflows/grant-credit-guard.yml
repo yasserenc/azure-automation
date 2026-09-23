@@ -17,7 +17,7 @@ permissions:
 
 env:
   CREDIT_THRESHOLD_USD: "50"
-  ENFORCEMENT_ENABLED: "false"
+  ENFORCEMENT_ENABLED: "true"
 
 jobs:
   guard:
