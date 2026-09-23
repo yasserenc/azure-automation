@@ -1,0 +1,219 @@
+name: Grant credit guard - Ulfah
+
+on:
+  push:
+    branches:
+      - main
+      - pilot/grant-credit-guard-ulfah
+    paths:
+      - .github/workflows/grant-credit-guard-ulfah.yml
+  schedule:
+    # GitHub invokes this daily; the gate below performs the real Azure check
+    # exactly once per three UTC days.
+    - cron: "17 06 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  CREDIT_THRESHOLD_USD: "50"
+  ENFORCEMENT_ENABLED: "false"
+
+jobs:
+  guard:
+    name: Check Ulfah grant credit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Verify threshold behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'from decimal import Decimal as D; t=D("50"); assert D("50.01") > t; assert D("50") <= t; assert D("49.99") <= t'
+
+      - name: Three-day schedule gate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != "schedule" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual/push validation: running now."
+            exit 0
+          fi
+
+          unix_day=$(( $(date -u +%s) / 86400 ))
+          if (( unix_day % 3 == 0 )); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Scheduled three-day guard window: running."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Not a three-day guard window: no Azure calls will be made."
+          fi
+
+      - name: Login to Azure - Ulfah
+        if: steps.gate.outputs.run == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Verify OIDC and read grant credit
+        if: steps.gate.outputs.run == 'true'
+        id: credit
+        shell: bash
+        env:
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+        run: |
+          set -Eeuo pipefail
+
+          az account get-access-token --query expiresOn -o tsv >/dev/null
+          az account set --subscription "$SUBSCRIPTION_ID"
+
+          billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors)"
+
+          sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property")"
+          agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property")"
+          account_resource_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property")"
+          profile_resource_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property")"
+
+          if [[ "$sku" != "Microsoft Azure Plan" ]]; then
+            echo "::error::Unexpected Azure plan/SKU: '$sku'. Guard refuses to continue."
+            exit 20
+          fi
+          if [[ "$agreement" != "MicrosoftCustomerAgreement" ]]; then
+            echo "::error::Unexpected billing agreement: '$agreement'. Guard refuses to continue."
+            exit 21
+          fi
+          if [[ -z "$account_resource_id" || -z "$profile_resource_id" ]]; then
+            echo "::error::Billing account/profile could not be discovered from the subscription."
+            exit 22
+          fi
+
+          billing_account_id="${account_resource_id##*/billingAccounts/}"
+          billing_profile_id="${profile_resource_id##*/billingProfiles/}"
+
+          credit_json="$(az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$billing_account_id/billingProfiles/$billing_profile_id/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors)"
+
+          current_balance="$(jq -r '.properties.balanceSummary.currentBalance.value // empty' <<<"$credit_json")"
+          estimated_balance="$(jq -r '.properties.balanceSummary.estimatedBalance.value // empty' <<<"$credit_json")"
+          currency="$(jq -r '.properties.creditCurrency // .properties.balanceSummary.currentBalance.currency // empty' <<<"$credit_json")"
+          pending_charges="$(jq -r '.properties.pendingEligibleCharges.value // 0' <<<"$credit_json")"
+          is_estimated="$(jq -r '.properties.isEstimatedBalance // false' <<<"$credit_json")"
+
+          if [[ -z "$current_balance" ]]; then
+            echo "::error::Azure returned no current credit balance."
+            exit 23
+          fi
+          if [[ "$currency" != "USD" ]]; then
+            echo "::error::Credit currency is '$currency', but the configured threshold is USD."
+            exit 24
+          fi
+
+          effective_remaining="$(CURRENT="$current_balance" ESTIMATED="$estimated_balance" python3 -c 'from decimal import Decimal; import os; c=Decimal(os.environ["CURRENT"]); e=Decimal(os.environ.get("ESTIMATED") or os.environ["CURRENT"]); print(min(c,e))')"
+          trigger="$(EFFECTIVE="$effective_remaining" THRESHOLD="$CREDIT_THRESHOLD_USD" python3 -c 'from decimal import Decimal; import os; print("true" if Decimal(os.environ["EFFECTIVE"]) <= Decimal(os.environ["THRESHOLD"]) else "false")')"
+
+          {
+            echo "effective_remaining=$effective_remaining"
+            echo "trigger=$trigger"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Ulfah grant credit guard"
+            echo ""
+            echo "- Plan: $sku"
+            echo "- Agreement: $agreement"
+            echo "- Current credit balance: **$current_balance USD**"
+            if [[ -n "$estimated_balance" ]]; then
+              echo "- Estimated credit balance: **$estimated_balance USD**"
+            fi
+            echo "- Conservative remaining balance: **$effective_remaining USD**"
+            echo "- Pending eligible charges reported by Azure: **$pending_charges USD**"
+            echo "- Azure marks balance as estimated: **$is_estimated**"
+            echo "- Compute-freeze threshold: **$CREDIT_THRESHOLD_USD USD**"
+            echo "- Threshold reached: **$trigger**"
+            echo "- Enforcement enabled: **$ENFORCEMENT_ENABLED**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inventory resource types
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          resource_json="$(az resource list -o json --only-show-errors)"
+          {
+            echo ""
+            echo "### Current resource inventory"
+            echo ""
+            echo "| Resource type | Count |"
+            echo "|---|---:|"
+            jq -r 'sort_by(.type) | group_by(.type)[] | "| " + .[0].type + " | " + (length|tostring) + " |"' <<<"$resource_json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validation threshold warning
+        if: steps.gate.outputs.run == 'true' && steps.credit.outputs.trigger == 'true' && env.ENFORCEMENT_ENABLED != 'true'
+        shell: bash
+        env:
+          EFFECTIVE: ${{ steps.credit.outputs.effective_remaining }}
+        run: |
+          set -euo pipefail
+          echo "::warning::Validation mode is read-only. Production enforcement would freeze compute because conservative remaining credit is $EFFECTIVE USD."
+
+      - name: Freeze virtual machines
+        if: steps.gate.outputs.run == 'true' && steps.credit.outputs.trigger == 'true' && github.ref == 'refs/heads/main' && env.ENFORCEMENT_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mapfile -t vm_rows < <(az vm list --query '[].[resourceGroup,name]' -o tsv --only-show-errors)
+          for row in "${vm_rows[@]}"; do
+            [[ -z "$row" ]] && continue
+            rg="$(cut -f1 <<<"$row")"
+            name="$(cut -f2 <<<"$row")"
+            echo "Deallocating VM: $rg/$name"
+            az vm deallocate --resource-group "$rg" --name "$name" --only-show-errors
+          done
+
+      - name: Deallocate VM scale sets
+        if: steps.gate.outputs.run == 'true' && steps.credit.outputs.trigger == 'true' && github.ref == 'refs/heads/main' && env.ENFORCEMENT_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mapfile -t vmss_rows < <(az vmss list --query '[].[resourceGroup,name]' -o tsv --only-show-errors)
+          for row in "${vmss_rows[@]}"; do
+            [[ -z "$row" ]] && continue
+            rg="$(cut -f1 <<<"$row")"
+            name="$(cut -f2 <<<"$row")"
+            echo "Deallocating VMSS: $rg/$name"
+            az vmss deallocate --resource-group "$rg" --name "$name" --only-show-errors
+          done
+
+      - name: Verify compute freeze
+        if: steps.gate.outputs.run == 'true' && steps.credit.outputs.trigger == 'true' && github.ref == 'refs/heads/main' && env.ENFORCEMENT_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          running_vms="$(az vm list -d --query "[?powerState!='VM deallocated'].{name:name,resourceGroup:resourceGroup,powerState:powerState}" -o json --only-show-errors)"
+          if [[ "$(jq 'length' <<<"$running_vms")" != "0" ]]; then
+            echo "::error::At least one standalone VM is not deallocated after the freeze."
+            jq . <<<"$running_vms"
+            exit 30
+          fi
+
+          echo "Standalone VM deallocation verified; VMSS deallocation commands completed successfully."
+          {
+            echo ""
+            echo "### Compute freeze"
+            echo ""
+            echo "VMs: **deallocated**"
+            echo ""
+            echo "VM scale sets: **deallocated (not deleted)**"
+            echo ""
+            echo "> No resources were deleted and the subscription was not canceled."
+          } >> "$GITHUB_STEP_SUMMARY"
