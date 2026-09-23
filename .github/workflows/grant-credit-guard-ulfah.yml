@@ -7,8 +7,6 @@ on:
     paths:
       - .github/workflows/grant-credit-guard-ulfah.yml
   schedule:
-    # GitHub schedules daily; the first step executes the actual guard only
-    # once every three UTC days using a Unix-day modulo gate.
     - cron: "17 06 * * *"
   workflow_dispatch:
 
@@ -66,9 +64,7 @@ jobs:
           az account get-access-token --query expiresOn -o tsv >/dev/null
           az account set --subscription "$SUBSCRIPTION_ID"
 
-          billing_property="$(
-            az rest               --method get               --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01"               --only-show-errors
-          )"
+          billing_property="$(az rest --method get --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01" --only-show-errors)"
 
           sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property")"
           agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property")"
@@ -91,17 +87,15 @@ jobs:
           billing_account_id="${account_resource_id##*/billingAccounts/}"
           billing_profile_id="${profile_resource_id##*/billingProfiles/}"
 
-          credit_json="$(
-            az rest               --method get               --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$billing_account_id/billingProfiles/$billing_profile_id/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01"               --only-show-errors
-          )"
+          credit_json="$(az rest --method get --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$billing_account_id/billingProfiles/$billing_profile_id/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01" --only-show-errors)"
 
-          current="$(jq -r '.properties.balanceSummary.currentBalance.value // empty' <<<"$credit_json")"
-          estimated="$(jq -r '.properties.balanceSummary.estimatedBalance.value // empty' <<<"$credit_json")"
+          current_balance="$(jq -r '.properties.balanceSummary.currentBalance.value // empty' <<<"$credit_json")"
+          estimated_balance="$(jq -r '.properties.balanceSummary.estimatedBalance.value // empty' <<<"$credit_json")"
           currency="$(jq -r '.properties.creditCurrency // .properties.balanceSummary.currentBalance.currency // empty' <<<"$credit_json")"
           pending_charges="$(jq -r '.properties.pendingEligibleCharges.value // 0' <<<"$credit_json")"
           is_estimated="$(jq -r '.properties.isEstimatedBalance // false' <<<"$credit_json")"
 
-          if [[ -z "$current" ]]; then
+          if [[ -z "$current_balance" ]]; then
             echo "::error::Azure returned no current credit balance."
             exit 23
           fi
@@ -110,47 +104,27 @@ jobs:
             exit 24
           fi
 
-          effective="$(
-            CURRENT="$current" ESTIMATED="$estimated" python3 - <<'PY'
-from decimal import Decimal
-import os
-
-current = Decimal(os.environ["CURRENT"])
-estimated_raw = os.environ.get("ESTIMATED", "").strip()
-estimated = Decimal(estimated_raw) if estimated_raw else current
-print(min(current, estimated))
-PY
-          )"
-
-          trigger="$(
-            EFFECTIVE="$effective" THRESHOLD="$CREDIT_THRESHOLD_USD" python3 - <<'PY'
-from decimal import Decimal
-import os
-
-effective = Decimal(os.environ["EFFECTIVE"])
-threshold = Decimal(os.environ["THRESHOLD"])
-print("true" if effective <= threshold else "false")
-PY
-          )"
+          effective_remaining="$(CURRENT="$current_balance" ESTIMATED="$estimated_balance" python3 -c 'from decimal import Decimal; import os; c=Decimal(os.environ["CURRENT"]); e=Decimal(os.environ.get("ESTIMATED") or os.environ["CURRENT"]); print(min(c,e))')"
+          trigger="$(EFFECTIVE="$effective_remaining" THRESHOLD="$CREDIT_THRESHOLD_USD" python3 -c 'from decimal import Decimal; import os; print("true" if Decimal(os.environ["EFFECTIVE"]) <= Decimal(os.environ["THRESHOLD"]) else "false")')"
 
           {
-            echo "effective_remaining=$effective"
+            echo "effective_remaining=$effective_remaining"
             echo "trigger=$trigger"
           } >> "$GITHUB_OUTPUT"
 
           {
             echo "## Ulfah grant credit guard"
             echo ""
-            echo "- Plan: `$sku`"
-            echo "- Agreement: `$agreement`"
-            echo "- Current credit balance: **$$current USD**"
-            if [[ -n "$estimated" ]]; then
-              echo "- Estimated credit balance: **$$estimated USD**"
+            echo "- Plan: $sku"
+            echo "- Agreement: $agreement"
+            echo "- Current credit balance: **$current_balance USD**"
+            if [[ -n "$estimated_balance" ]]; then
+              echo "- Estimated credit balance: **$estimated_balance USD**"
             fi
-            echo "- Conservative remaining balance: **$$effective USD**"
-            echo "- Pending eligible charges reported by Azure: **$$pending_charges USD**"
+            echo "- Conservative remaining balance: **$effective_remaining USD**"
+            echo "- Pending eligible charges reported by Azure: **$pending_charges USD**"
             echo "- Azure marks balance as estimated: **$is_estimated**"
-            echo "- Freeze threshold: **$$CREDIT_THRESHOLD_USD USD**"
+            echo "- Freeze threshold: **$CREDIT_THRESHOLD_USD USD**"
             echo "- Threshold reached: **$trigger**"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -166,7 +140,7 @@ PY
             echo ""
             echo "| Resource type | Count |"
             echo "|---|---:|"
-            jq -r 'group_by(.type)[] | "| `" + .[0].type + "` | " + (length|tostring) + " |"' <<<"$resource_json"
+            jq -r 'group_by(.type)[] | "| " + .[0].type + " | " + (length|tostring) + " |"' <<<"$resource_json"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pilot enforcement decision
