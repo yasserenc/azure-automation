@@ -148,7 +148,7 @@ jobs:
             echo ""
             echo "| Resource type | Count |"
             echo "|---|---:|"
-            jq -r 'group_by(.type)[] | "| " + .[0].type + " | " + (length|tostring) + " |"' <<<"$resource_json"
+            jq -r 'sort_by(.type) | group_by(.type)[] | "| " + .[0].type + " | " + (length|tostring) + " |"' <<<"$resource_json"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pilot threshold warning
