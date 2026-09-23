@@ -1,0 +1,242 @@
+name: Azure grant credit guard - all accounts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/grant-credit-guard.yml
+      - .github/scripts/grant-account-guard.sh
+  schedule:
+    # GitHub invokes daily; the gate performs the Azure checks once per 3 UTC days.
+    - cron: "17 06 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  CREDIT_THRESHOLD_USD: "50"
+  ENFORCEMENT_ENABLED: "false"
+
+jobs:
+  guard:
+    name: Check five Azure grant accounts serially
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out guard script
+        uses: actions/checkout@v4
+
+      - name: Initialize guard
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'from decimal import Decimal as D; t=D("50"); assert D("50.01") > t; assert D("50") <= t; assert D("49.99") <= t'
+          echo "RESULTS_FILE=$RUNNER_TEMP/grant-guard-results.tsv" >> "$GITHUB_ENV"
+          printf 'target\tstatus\ttrigger\tnote\n' > "$RUNNER_TEMP/grant-guard-results.tsv"
+
+          if [[ "$GITHUB_EVENT_NAME" != "schedule" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          unix_day=$(( $(date -u +%s) / 86400 ))
+          if (( unix_day % 3 == 0 )); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Not a three-day guard window; no Azure calls will be made."
+          fi
+
+      - name: Login - rfcy
+        id: login_rfcy
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+
+      - name: Guard - rfcy
+        if: steps.gate.outputs.run == 'true' && always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: rfcy
+          LOGIN_OUTCOME: ${{ steps.login_rfcy.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+        run: |
+          set +e
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\t%s\t%s\t%s\n' "$TARGET" "error" "unknown" "oidc-login-failed" >> "$RESULTS_FILE"
+            rc=1
+          else
+            bash .github/scripts/grant-account-guard.sh
+            rc=$?
+          fi
+          az account clear >/dev/null 2>&1 || true
+          exit "$rc"
+
+      - name: Login - wdt
+        id: login_wdt
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_wdt }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_wdt }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+
+      - name: Guard - wdt
+        if: steps.gate.outputs.run == 'true' && always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: wdt
+          LOGIN_OUTCOME: ${{ steps.login_wdt.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+        run: |
+          set +e
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\t%s\t%s\t%s\n' "$TARGET" "error" "unknown" "oidc-login-failed" >> "$RESULTS_FILE"
+            rc=1
+          else
+            bash .github/scripts/grant-account-guard.sh
+            rc=$?
+          fi
+          az account clear >/dev/null 2>&1 || true
+          exit "$rc"
+
+      - name: Login - altaaf
+        id: login_altaaf
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_altaaf }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_altaaf }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+
+      - name: Guard - altaaf
+        if: steps.gate.outputs.run == 'true' && always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: altaaf
+          LOGIN_OUTCOME: ${{ steps.login_altaaf.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+        run: |
+          set +e
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\t%s\t%s\t%s\n' "$TARGET" "error" "unknown" "oidc-login-failed" >> "$RESULTS_FILE"
+            rc=1
+          else
+            bash .github/scripts/grant-account-guard.sh
+            rc=$?
+          fi
+          az account clear >/dev/null 2>&1 || true
+          exit "$rc"
+
+      - name: Login - oamal
+        id: login_oamal
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_oamal }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_oamal }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+
+      - name: Guard - oamal
+        if: steps.gate.outputs.run == 'true' && always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: oamal
+          LOGIN_OUTCOME: ${{ steps.login_oamal.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+        run: |
+          set +e
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\t%s\t%s\t%s\n' "$TARGET" "error" "unknown" "oidc-login-failed" >> "$RESULTS_FILE"
+            rc=1
+          else
+            bash .github/scripts/grant-account-guard.sh
+            rc=$?
+          fi
+          az account clear >/dev/null 2>&1 || true
+          exit "$rc"
+
+      - name: Login - Ulfah
+        id: login_ulfah
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Guard - Ulfah
+        if: steps.gate.outputs.run == 'true' && always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: Ulfah
+          LOGIN_OUTCOME: ${{ steps.login_ulfah.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+        run: |
+          set +e
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\t%s\t%s\t%s\n' "$TARGET" "error" "unknown" "oidc-login-failed" >> "$RESULTS_FILE"
+            rc=1
+          else
+            bash .github/scripts/grant-account-guard.sh
+            rc=$?
+          fi
+          az account clear >/dev/null 2>&1 || true
+          exit "$rc"
+
+      - name: Final guard result
+        if: steps.gate.outputs.run == 'true' && always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Five-account Azure grant guard"
+            echo ""
+            echo "| Target | Result | Threshold reached | Note |"
+            echo "|---|---|---|---|"
+            tail -n +2 "$RESULTS_FILE" | while IFS=$'\t' read -r target status trigger note; do
+              echo "| $target | $status | $trigger | $note |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          total="$(tail -n +2 "$RESULTS_FILE" | wc -l | tr -d ' ')"
+          errors="$(awk -F '\t' 'NR>1 && $2=="error" {c++} END{print c+0}' "$RESULTS_FILE")"
+          emergencies="$(awk -F '\t' 'NR>1 && $2=="emergency-freeze" {c++} END{print c+0}' "$RESULTS_FILE")"
+          would_freeze="$(awk -F '\t' 'NR>1 && $2=="would-freeze" {c++} END{print c+0}' "$RESULTS_FILE")"
+
+          if [[ "$total" != "5" ]]; then
+            echo "::error::Expected results for 5 grant accounts, got $total."
+            exit 2
+          fi
+          if [[ "$errors" != "0" ]]; then
+            echo "::error::$errors grant account check(s) failed."
+            exit 3
+          fi
+          if [[ "$would_freeze" != "0" ]]; then
+            echo "::error::$would_freeze account(s) are already at/below the $CREDIT_THRESHOLD_USD USD threshold; validation mode did not change compute."
+            exit 4
+          fi
+          if [[ "$emergencies" != "0" ]]; then
+            echo "::error::$emergencies emergency compute freeze(s) completed."
+            exit 40
+          fi
+
+          echo "All five grant accounts are healthy and above the configured threshold."
