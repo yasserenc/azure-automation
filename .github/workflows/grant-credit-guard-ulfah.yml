@@ -1,0 +1,184 @@
+name: Grant credit guard - Ulfah
+
+on:
+  push:
+    branches:
+      - pilot/grant-credit-guard-ulfah
+    paths:
+      - .github/workflows/grant-credit-guard-ulfah.yml
+  schedule:
+    # GitHub schedules daily; the first step executes the actual guard only
+    # once every three UTC days using a Unix-day modulo gate.
+    - cron: "17 06 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  CREDIT_THRESHOLD_USD: "50"
+
+jobs:
+  guard:
+    name: Check Ulfah grant credit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Three-day schedule gate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != "schedule" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual/push validation: running now."
+            exit 0
+          fi
+
+          unix_day=$(( $(date -u +%s) / 86400 ))
+          if (( unix_day % 3 == 0 )); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Scheduled three-day guard window: running."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Not a three-day guard window: no Azure calls will be made."
+          fi
+
+      - name: Login to Azure - Ulfah
+        if: steps.gate.outputs.run == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Verify OIDC and read grant credit
+        if: steps.gate.outputs.run == 'true'
+        id: credit
+        shell: bash
+        env:
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+        run: |
+          set -Eeuo pipefail
+
+          az account get-access-token --query expiresOn -o tsv >/dev/null
+          az account set --subscription "$SUBSCRIPTION_ID"
+
+          billing_property="$(
+            az rest               --method get               --url "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Billing/billingProperty/default?api-version=2024-04-01"               --only-show-errors
+          )"
+
+          sku="$(jq -r '.properties.skuDescription // empty' <<<"$billing_property")"
+          agreement="$(jq -r '.properties.billingAccountAgreementType // empty' <<<"$billing_property")"
+          account_resource_id="$(jq -r '.properties.billingAccountId // empty' <<<"$billing_property")"
+          profile_resource_id="$(jq -r '.properties.billingProfileId // empty' <<<"$billing_property")"
+
+          if [[ "$sku" != "Microsoft Azure Plan" ]]; then
+            echo "::error::Unexpected Azure plan/SKU: '$sku'. Guard refuses to continue."
+            exit 20
+          fi
+          if [[ "$agreement" != "MicrosoftCustomerAgreement" ]]; then
+            echo "::error::Unexpected billing agreement: '$agreement'. Guard refuses to continue."
+            exit 21
+          fi
+          if [[ -z "$account_resource_id" || -z "$profile_resource_id" ]]; then
+            echo "::error::Billing account/profile could not be discovered from the subscription."
+            exit 22
+          fi
+
+          billing_account_id="${account_resource_id##*/billingAccounts/}"
+          billing_profile_id="${profile_resource_id##*/billingProfiles/}"
+
+          credit_json="$(
+            az rest               --method get               --url "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/$billing_account_id/billingProfiles/$billing_profile_id/providers/Microsoft.Consumption/credits/balanceSummary?api-version=2026-06-01"               --only-show-errors
+          )"
+
+          current="$(jq -r '.properties.balanceSummary.currentBalance.value // empty' <<<"$credit_json")"
+          estimated="$(jq -r '.properties.balanceSummary.estimatedBalance.value // empty' <<<"$credit_json")"
+          currency="$(jq -r '.properties.creditCurrency // .properties.balanceSummary.currentBalance.currency // empty' <<<"$credit_json")"
+          pending_charges="$(jq -r '.properties.pendingEligibleCharges.value // 0' <<<"$credit_json")"
+          is_estimated="$(jq -r '.properties.isEstimatedBalance // false' <<<"$credit_json")"
+
+          if [[ -z "$current" ]]; then
+            echo "::error::Azure returned no current credit balance."
+            exit 23
+          fi
+          if [[ "$currency" != "USD" ]]; then
+            echo "::error::Credit currency is '$currency', but the configured threshold is USD."
+            exit 24
+          fi
+
+          effective="$(
+            CURRENT="$current" ESTIMATED="$estimated" python3 - <<'PY'
+from decimal import Decimal
+import os
+
+current = Decimal(os.environ["CURRENT"])
+estimated_raw = os.environ.get("ESTIMATED", "").strip()
+estimated = Decimal(estimated_raw) if estimated_raw else current
+print(min(current, estimated))
+PY
+          )"
+
+          trigger="$(
+            EFFECTIVE="$effective" THRESHOLD="$CREDIT_THRESHOLD_USD" python3 - <<'PY'
+from decimal import Decimal
+import os
+
+effective = Decimal(os.environ["EFFECTIVE"])
+threshold = Decimal(os.environ["THRESHOLD"])
+print("true" if effective <= threshold else "false")
+PY
+          )"
+
+          {
+            echo "effective_remaining=$effective"
+            echo "trigger=$trigger"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Ulfah grant credit guard"
+            echo ""
+            echo "- Plan: `$sku`"
+            echo "- Agreement: `$agreement`"
+            echo "- Current credit balance: **$$current USD**"
+            if [[ -n "$estimated" ]]; then
+              echo "- Estimated credit balance: **$$estimated USD**"
+            fi
+            echo "- Conservative remaining balance: **$$effective USD**"
+            echo "- Pending eligible charges reported by Azure: **$$pending_charges USD**"
+            echo "- Azure marks balance as estimated: **$is_estimated**"
+            echo "- Freeze threshold: **$$CREDIT_THRESHOLD_USD USD**"
+            echo "- Threshold reached: **$trigger**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inventory resource types
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          resource_json="$(az resource list -o json --only-show-errors)"
+          {
+            echo ""
+            echo "### Current resource inventory"
+            echo ""
+            echo "| Resource type | Count |"
+            echo "|---|---:|"
+            jq -r 'group_by(.type)[] | "| `" + .[0].type + "` | " + (length|tostring) + " |"' <<<"$resource_json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pilot enforcement decision
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          TRIGGER: ${{ steps.credit.outputs.trigger }}
+          EFFECTIVE: ${{ steps.credit.outputs.effective_remaining }}
+        run: |
+          set -euo pipefail
+          if [[ "$TRIGGER" == "true" ]]; then
+            echo "::warning::Pilot is read-only. A production run would freeze charge-generating resources because remaining credit is $EFFECTIVE USD."
+          else
+            echo "Credit is above the $CREDIT_THRESHOLD_USD USD freeze threshold. No action required."
+          fi
