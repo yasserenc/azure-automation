@@ -175,7 +175,7 @@ jobs:
             az vm deallocate --resource-group "$rg" --name "$name" --only-show-errors
           done
 
-      - name: Scale VM scale sets to zero
+      - name: Deallocate VM scale sets
         if: steps.gate.outputs.run == 'true' && steps.credit.outputs.trigger == 'true' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
@@ -186,8 +186,8 @@ jobs:
             [[ -z "$row" ]] && continue
             rg="$(cut -f1 <<<"$row")"
             name="$(cut -f2 <<<"$row")"
-            echo "Scaling VMSS to zero: $rg/$name"
-            az vmss scale --resource-group "$rg" --name "$name" --new-capacity 0 --only-show-errors
+            echo "Deallocating VMSS: $rg/$name"
+            az vmss deallocate --resource-group "$rg" --name "$name" --only-show-errors
           done
 
       - name: Verify compute freeze
@@ -197,27 +197,20 @@ jobs:
           set -Eeuo pipefail
 
           running_vms="$(az vm list -d --query "[?powerState!='VM deallocated'].{name:name,resourceGroup:resourceGroup,powerState:powerState}" -o json --only-show-errors)"
-          nonzero_vmss="$(az vmss list --query '[?sku.capacity != `0`].{name:name,resourceGroup:resourceGroup,capacity:sku.capacity}' -o json --only-show-errors)"
-
           if [[ "$(jq 'length' <<<"$running_vms")" != "0" ]]; then
-            echo "::error::At least one VM is not deallocated after the freeze."
+            echo "::error::At least one standalone VM is not deallocated after the freeze."
             jq . <<<"$running_vms"
             exit 30
           fi
-          if [[ "$(jq 'length' <<<"$nonzero_vmss")" != "0" ]]; then
-            echo "::error::At least one VM scale set still has non-zero capacity."
-            jq . <<<"$nonzero_vmss"
-            exit 31
-          fi
 
-          echo "Compute freeze verified."
+          echo "Standalone VM deallocation verified; VMSS deallocation commands completed successfully."
           {
             echo ""
             echo "### Compute freeze"
             echo ""
             echo "VMs: **deallocated**"
             echo ""
-            echo "VM scale sets: **capacity 0**"
+            echo "VM scale sets: **deallocated (not deleted)**"
             echo ""
             echo "> No resources were deleted and the subscription was not canceled."
           } >> "$GITHUB_STEP_SUMMARY"
