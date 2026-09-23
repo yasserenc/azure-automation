@@ -1,0 +1,19 @@
+name: Runner smoke test
+
+on:
+  push:
+    branches:
+      - pilot/grant-credit-guard-ulfah
+    paths:
+      - .github/workflows/runner-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Runner is alive
+        run: echo "RUNNER_SMOKE_PASS"
