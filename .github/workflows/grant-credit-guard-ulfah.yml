@@ -122,6 +122,8 @@ jobs:
             echo "trigger=$trigger"
           } >> "$GITHUB_OUTPUT"
 
+          echo "Credit check: current=$current_balance USD estimated=${estimated_balance:-n/a} USD effective=$effective_remaining USD pending=$pending_charges USD threshold=$CREDIT_THRESHOLD_USD USD trigger=$trigger enforcement=$ENFORCEMENT_ENABLED"
+
           {
             echo "## Ulfah grant credit guard"
             echo ""
