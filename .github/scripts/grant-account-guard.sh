@@ -64,6 +64,8 @@ currency="$(jq -r '.properties.creditCurrency // .properties.balanceSummary.curr
 effective_remaining="$(CURRENT="$current_balance" ESTIMATED="$estimated_balance" python3 -c 'from decimal import Decimal; import os; c=Decimal(os.environ["CURRENT"]); e=Decimal(os.environ.get("ESTIMATED") or os.environ["CURRENT"]); print(min(c,e))')"
 trigger="$(EFFECTIVE="$effective_remaining" THRESHOLD="$CREDIT_THRESHOLD_USD" python3 -c 'from decimal import Decimal; import os; print("true" if Decimal(os.environ["EFFECTIVE"]) <= Decimal(os.environ["THRESHOLD"]) else "false")')"
 
+echo "[$TARGET] CREDIT current=$current_balance estimated=${estimated_balance:-n/a} effective=$effective_remaining currency=$currency"
+
 if [[ "$trigger" != "true" ]]; then
   record_result "ok" "false" "above-threshold"
   {
