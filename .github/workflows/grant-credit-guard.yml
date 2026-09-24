@@ -1,4 +1,4 @@
-name: Azure grant credit guard - all accounts
+name: Azure grant credit guard - all grant accounts
 
 on:
   push:
@@ -21,7 +21,7 @@ env:
 
 jobs:
   guard:
-    name: Check five Azure grant accounts serially
+    name: Check six Azure grant accounts serially
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -171,6 +171,37 @@ jobs:
           az account clear >/dev/null 2>&1 || true
           exit "$rc"
 
+      - name: Login - ALBAN
+        id: login_alban
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_ALBAN }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_ALBAN }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}
+
+      - name: Guard - ALBAN
+        if: steps.gate.outputs.run == 'true' && always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: ALBAN
+          LOGIN_OUTCOME: ${{ steps.login_alban.outcome }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}
+          ENFORCEMENT_ENABLED: "false"
+        run: |
+          set +e
+          if [[ "$LOGIN_OUTCOME" != "success" ]]; then
+            printf '%s\t%s\t%s\t%s\n' "$TARGET" "error" "unknown" "oidc-login-failed" >> "$RESULTS_FILE"
+            rc=1
+          else
+            bash .github/scripts/grant-account-guard.sh
+            rc=$?
+          fi
+          az account clear >/dev/null 2>&1 || true
+          exit "$rc"
+
       - name: Login - Ulfah
         id: login_ulfah
         if: steps.gate.outputs.run == 'true'
@@ -208,7 +239,7 @@ jobs:
           set -euo pipefail
 
           {
-            echo "## Five-account Azure grant guard"
+            echo "## Six-account Azure grant guard"
             echo ""
             echo "| Target | Result | Threshold reached | Note |"
             echo "|---|---|---|---|"
@@ -225,8 +256,8 @@ jobs:
           emergencies="$(awk -F '\t' 'NR>1 && $2=="emergency-freeze" {c++} END{print c+0}' "$RESULTS_FILE")"
           would_freeze="$(awk -F '\t' 'NR>1 && $2=="would-freeze" {c++} END{print c+0}' "$RESULTS_FILE")"
 
-          if [[ "$total" != "5" ]]; then
-            echo "::error::Expected results for 5 grant accounts, got $total."
+          if [[ "$total" != "6" ]]; then
+            echo "::error::Expected results for 6 grant accounts, got $total."
             exit 2
           fi
           if [[ "$errors" != "0" ]]; then
@@ -242,4 +273,4 @@ jobs:
             exit 40
           fi
 
-          echo "All five grant accounts are healthy and above the configured threshold."
+          echo "All six grant accounts are healthy and above the configured threshold."
