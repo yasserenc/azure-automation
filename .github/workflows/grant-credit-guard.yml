@@ -248,6 +248,9 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
+          echo "Guard results:"
+          cat "$RESULTS_FILE"
+
           total="$(tail -n +2 "$RESULTS_FILE" | wc -l | tr -d ' ')"
           errors="$(awk -F '\t' 'NR>1 && $2=="error" {c++} END{print c+0}' "$RESULTS_FILE")"
           emergencies="$(awk -F '\t' 'NR>1 && $2=="emergency-freeze" {c++} END{print c+0}' "$RESULTS_FILE")"
