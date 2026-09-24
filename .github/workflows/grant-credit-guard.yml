@@ -189,7 +189,6 @@ jobs:
           TARGET: ALBAN
           LOGIN_OUTCOME: ${{ steps.login_alban.outcome }}
           SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}
-          ENFORCEMENT_ENABLED: "false"
         run: |
           set +e
           if [[ "$LOGIN_OUTCOME" != "success" ]]; then
