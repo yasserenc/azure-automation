@@ -1,0 +1,29 @@
+name: Temporary Ulfah VM inventory
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Login to Azure - Ulfah
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Read current VM inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SUBSCRIPTION"
+          az account show --query '{name:name,state:state}' -o json --only-show-errors
+          echo "VM_INVENTORY"
+          az vm list -d --query "[].{name:name,resourceGroup:resourceGroup,location:location,size:hardwareProfile.vmSize,osType:storageProfile.osDisk.osType,provisioningState:provisioningState,powerState:powerState}" -o json --only-show-errors
