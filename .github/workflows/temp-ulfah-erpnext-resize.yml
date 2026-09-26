@@ -49,7 +49,7 @@ jobs:
                   rows.append((name,mem,caps.get('vCPUs'),caps.get('CpuArchitectureType',''),s.get('restrictions',[])))
           def price(sku, region):
               filt = "serviceName eq 'Virtual Machines' and armRegionName eq '%s' and armSkuName eq '%s' and priceType eq 'Consumption'" % (region, sku)
-              url='https://prices.azure.com/api/retail/prices?$filter='+urllib.parse.quote(filt, safe="=$' ")
+              url='https://prices.azure.com/api/retail/prices?'+urllib.parse.urlencode({'$filter':filt})
               with urllib.request.urlopen(url, timeout=30) as r:
                   data=json.load(r)
               vals=[]
