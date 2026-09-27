@@ -32,16 +32,16 @@ jobs:
           umask 077
           cat > "$RUNNER_TEMP/p1-public.pem" <<'EOF'
           -----BEGIN PUBLIC KEY-----
-          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAr45V1p76EGRmvbrxZnDF
-          X/VQOteqT/elOYI9v90yXawRxwXfYNF0AxCoL5Z0HqE3xvPyZw04dK9ZQap2xGPH
-          L9p5K4+MPqxrLBr12rUk9j6LQO4dk8knO5Ajn/lgtj85gr51TOIPtee1V9/o0wDf
-          tyE9kkdmqBaJalBsXtywo7+XYdEXmvGvOAoUU6W9z0SraGvSZUGFg1ucsMzN5JlL
-          lE4/+olt1CslVisUAzSc2PiGZgxavhYl42K/hX0pO+zH+WBPGHyiwngIKXBu0FWe
-          iQrbTAA7VY7gEd9HNXOm35h4o41K4vupHj6+xgvIrbK7I+vcWiU3rBHXaxMDh7G/
-          h0iuXayKplmfdQ58VuV7I0ccxi/UHbrskrkgfQLO7+hSKjD67G6m3hs+nNSxxgpg
-          j4p0cuFSCtn159mQc/1CS7YoPlPTAnySIv9nPmkACMEBtD6watyOmyewtKg7NcC6
-          crcFhBE5AmRt0EJpaK38XN1kDcafOdt1h9GPvf8fy0Z7AgMBAAE=
-          -----END PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAzFk6hNtQsgH7e2NWOMBU
+5W+IQzQjWR1o2oJdo4EvsOaQpkLYFDqp2cplE1jTEWWigwLDZtvlkh5LRaLFgQU8
+8jYZlfPQzhzCjh4vM2qjH1UogoLM4rs/aTO89Tod5DX3L6CXBUqIpHyRw6rGoDHF
+c5nlCnD13EQn9xK54BAiAKgj4Nj75p8olmdb6ztqK8rkOlJbiIGpBricflYtpndB
+gbwCI9fLEWWd0JK5XeVEELSyHfMSb6Tc0lGy+9adDsx7aUpbec5XeOF9JjXkP1hJ
+7EAC+yKz2seKoxsOaa6GqI8tVPCLLbINCpc/YUlRUTUEw24pRLthNcKIf1i9d0Jx
+rC1TQ2NDhVicfj2QP9DD15kBXj/6sP0+0d64MQI27M0wkWD9QMJpIUAgDRXS6PIl
+Xj1z460Af7XQPUJRYgyaGYId+EIqmE6g1lxiKhIG8/mlVPw5cx0Taz7kLSBozBgw
+C4M2sh5JCHyP1YZeR2PA3Sf0+oPCSMhG/858h/sgM0opAgMBAAE=
+-----END PUBLIC KEY-----
           EOF
 
           az vm list --subscription "$SUBSCRIPTION_ID" -o json > "$RUNNER_TEMP/vms.json"
