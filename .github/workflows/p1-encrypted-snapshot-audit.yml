@@ -1,0 +1,129 @@
+name: P1 encrypted snapshot audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/p1-encrypted-snapshot-audit.yml
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Audit snapshot and encrypt result
+        shell: bash
+        env:
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+          VM_SELECTOR_SHA256: aca185469cfb40a4545d5049dd2bb61f7ac67ee27f15d2b958161f58fb37eef8
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > "$RUNNER_TEMP/p1-public.pem" <<'EOF'
+          -----BEGIN PUBLIC KEY-----
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAr45V1p76EGRmvbrxZnDF
+          X/VQOteqT/elOYI9v90yXawRxwXfYNF0AxCoL5Z0HqE3xvPyZw04dK9ZQap2xGPH
+          L9p5K4+MPqxrLBr12rUk9j6LQO4dk8knO5Ajn/lgtj85gr51TOIPtee1V9/o0wDf
+          tyE9kkdmqBaJalBsXtywo7+XYdEXmvGvOAoUU6W9z0SraGvSZUGFg1ucsMzN5JlL
+          lE4/+olt1CslVisUAzSc2PiGZgxavhYl42K/hX0pO+zH+WBPGHyiwngIKXBu0FWe
+          iQrbTAA7VY7gEd9HNXOm35h4o41K4vupHj6+xgvIrbK7I+vcWiU3rBHXaxMDh7G/
+          h0iuXayKplmfdQ58VuV7I0ccxi/UHbrskrkgfQLO7+hSKjD67G6m3hs+nNSxxgpg
+          j4p0cuFSCtn159mQc/1CS7YoPlPTAnySIv9nPmkACMEBtD6watyOmyewtKg7NcC6
+          crcFhBE5AmRt0EJpaK38XN1kDcafOdt1h9GPvf8fy0Z7AgMBAAE=
+          -----END PUBLIC KEY-----
+          EOF
+
+          az vm list --subscription "$SUBSCRIPTION_ID" -o json > "$RUNNER_TEMP/vms.json"
+          az snapshot list --subscription "$SUBSCRIPTION_ID" -o json > "$RUNNER_TEMP/snapshots.json"
+
+          python3 - "$VM_SELECTOR_SHA256" "$RUNNER_TEMP/vms.json" "$RUNNER_TEMP/snapshots.json" "$RUNNER_TEMP/result.json" <<'PY'
+          import datetime, hashlib, json, sys
+          selector, vm_path, snap_path, out_path = sys.argv[1:]
+          vms = json.load(open(vm_path))
+          matches = []
+          for vm in vms:
+              key = f"{vm.get('resourceGroup','').lower()}|{vm.get('name','').lower()}".encode()
+              if hashlib.sha256(key).hexdigest() == selector:
+                  matches.append(vm)
+          if len(matches) != 1:
+              raise SystemExit(f"expected exactly one selected VM, found {len(matches)}")
+          vm = matches[0]
+          osdisk = (((vm.get("storageProfile") or {}).get("osDisk") or {}).get("managedDisk") or {}).get("id")
+          if not osdisk:
+              raise SystemExit("selected VM has no managed OS disk ID")
+          snaps = json.load(open(snap_path))
+          related = []
+          for s in snaps:
+              source = ((s.get("creationData") or {}).get("sourceResourceId") or "")
+              if source.lower() == osdisk.lower():
+                  related.append(s)
+          if not related:
+              raise SystemExit("no snapshot found whose creationData.sourceResourceId matches selected VM OS disk")
+          def ts(s):
+              return s.get("timeCreated") or s.get("time_created") or ""
+          related.sort(key=ts, reverse=True)
+          s = related[0]
+          result = {
+              "verified_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "subscription_id": vm.get("id","").split("/")[2],
+              "vm": {
+                  "name": vm.get("name"),
+                  "resource_group": vm.get("resourceGroup"),
+                  "id": vm.get("id"),
+                  "location": vm.get("location"),
+                  "os_disk_resource_id": osdisk,
+              },
+              "snapshot": {
+                  "id": s.get("id"),
+                  "name": s.get("name"),
+                  "resource_group": s.get("resourceGroup"),
+                  "location": s.get("location"),
+                  "time_created": ts(s),
+                  "provisioning_state": s.get("provisioningState"),
+                  "source_resource_id": ((s.get("creationData") or {}).get("sourceResourceId")),
+                  "disk_size_gb": s.get("diskSizeGb"),
+                  "sku": (s.get("sku") or {}).get("name"),
+              },
+              "matching_snapshot_count": len(related),
+          }
+          result["source_disk_match"] = (
+              (result["snapshot"]["source_resource_id"] or "").lower()
+              == osdisk.lower()
+          )
+          raw = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+          result["result_sha256"] = hashlib.sha256(raw).hexdigest()
+          with open(out_path, "w") as f:
+              json.dump(result, f, sort_keys=True, indent=2)
+          PY
+
+          openssl rand -hex 32 > "$RUNNER_TEMP/p1-pass"
+          openssl enc -aes-256-cbc -pbkdf2 -salt             -in "$RUNNER_TEMP/result.json"             -out "$RUNNER_TEMP/result.enc"             -pass file:"$RUNNER_TEMP/p1-pass"
+          openssl pkeyutl -encrypt -pubin             -inkey "$RUNNER_TEMP/p1-public.pem"             -in "$RUNNER_TEMP/p1-pass"             -out "$RUNNER_TEMP/key.enc"             -pkeyopt rsa_padding_mode:oaep             -pkeyopt rsa_oaep_md:sha256
+          rm -f "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/p1-pass" "$RUNNER_TEMP/vms.json" "$RUNNER_TEMP/snapshots.json"
+          echo "Encrypted snapshot audit prepared."
+
+      - name: Upload encrypted audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-encrypted-snapshot-audit
+          path: |
+            ${{ runner.temp }}/result.enc
+            ${{ runner.temp }}/key.enc
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Clear Azure session
+        if: always()
+        shell: bash
+        run: az account clear >/dev/null 2>&1 || true
