@@ -21,60 +21,38 @@ jobs:
           cat > "$RUNNER_TEMP/audit-public-ip-cost.sh" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
-
           target="$1"
           sub="$2"
 
           az account set --subscription "$sub"
-
           current_count="$(az network public-ip list --query 'length(@)' -o tsv --only-show-errors)"
 
           query_period() {
-            local label="$1"
-            local timeframe="$2"
-            local body
-            body="$(jq -nc --arg tf "$timeframe" '{
-              type:"Usage",
-              timeframe:$tf,
-              dataset:{
-                granularity:"None",
-                aggregation:{totalCost:{name:"PreTaxCost",function:"Sum"}},
-                grouping:[{type:"Dimension",name:"ResourceType"}]
-              }
-            }')"
+            label="$1"
+            timeframe="$2"
 
-            response="$(az rest               --method post               --url "https://management.azure.com/subscriptions/$sub/providers/Microsoft.CostManagement/query?api-version=2025-03-01"               --headers Content-Type=application/json               --body "$body"               --only-show-errors)"
+            body="$(jq -nc --arg tf "$timeframe" '{type:"Usage",timeframe:$tf,dataset:{granularity:"None",aggregation:{totalCost:{name:"PreTaxCost",function:"Sum"}},grouping:[{type:"Dimension",name:"ResourceType"}]}}')"
 
-            python3 - "$target" "$label" "$current_count" <<'PY' <<<"$response"
-import json, sys
-target, label, count = sys.argv[1:4]
-data = json.load(sys.stdin)
-cols = [c.get("name","") for c in data.get("properties",{}).get("columns",[])]
-rows = data.get("properties",{}).get("rows",[])
-matches = []
-for row in rows:
-    rec = dict(zip(cols,row))
-    rt = str(rec.get("ResourceType",""))
-    if "publicipaddresses" in rt.lower():
-        matches.append(rec)
-if not matches:
-    print(f"AUDIT|{target}|{label}|{count}|0|N/A|NO_PUBLIC_IP_COST_ROW")
-else:
-    total = 0.0
-    currency = None
-    for rec in matches:
-        val = rec.get("PreTaxCost", rec.get("Cost", 0)) or 0
-        try:
-            total += float(val)
-        except Exception:
-            pass
-        currency = currency or rec.get("Currency")
-    print(f"AUDIT|{target}|{label}|{count}|{total:.6f}|{currency or 'N/A'}|OK")
-PY
+            response="$(az rest --method post --url "https://management.azure.com/subscriptions/$sub/providers/Microsoft.CostManagement/query?api-version=2025-03-01" --headers Content-Type=application/json --body "$body" --only-show-errors)"
+
+            result="$(jq -r '
+              [.properties.columns[].name] as $c |
+              ($c | index("PreTaxCost")) as $cost |
+              ($c | index("ResourceType")) as $rt |
+              ($c | index("Currency")) as $cur |
+              [.properties.rows[] | select(((.[$rt] // "") | tostring | ascii_downcase) | contains("publicipaddresses"))] as $m |
+              if ($m | length) == 0 then
+                "0|N/A|NO_PUBLIC_IP_COST_ROW"
+              else
+                (([$m[][$cost] | tonumber] | add) | tostring) + "|" + (($m[0][$cur] // "N/A") | tostring) + "|OK"
+              end
+            ' <<<"$response")"
+
+            echo "AUDIT|$target|$label|$current_count|$result"
           }
 
-          query_period "last_full_month" "TheLastMonth"
-          query_period "month_to_date" "MonthToDate"
+          query_period last_full_month TheLastMonth
+          query_period month_to_date MonthToDate
           EOF
           chmod +x "$RUNNER_TEMP/audit-public-ip-cost.sh"
 
@@ -85,7 +63,6 @@ PY
           tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
       - name: Audit - rfcy
-        shell: bash
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh rfcy ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}"
       - name: Clear - rfcy
         if: always()
@@ -98,7 +75,6 @@ PY
           tenant-id: ${{ secrets.AZURE_TENANT_ID_wdt }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
       - name: Audit - wdt
-        shell: bash
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh wdt ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}"
       - name: Clear - wdt
         if: always()
@@ -111,7 +87,6 @@ PY
           tenant-id: ${{ secrets.AZURE_TENANT_ID_altaaf }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
       - name: Audit - altaaf
-        shell: bash
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh altaaf ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}"
       - name: Clear - altaaf
         if: always()
@@ -124,7 +99,6 @@ PY
           tenant-id: ${{ secrets.AZURE_TENANT_ID_oamal }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
       - name: Audit - oamal
-        shell: bash
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh oamal ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}"
       - name: Clear - oamal
         if: always()
@@ -137,7 +111,6 @@ PY
           tenant-id: ${{ secrets.AZURE_TENANT_ID_ALBAN }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}
       - name: Audit - ALBAN
-        shell: bash
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh ALBAN ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}"
       - name: Clear - ALBAN
         if: always()
@@ -150,7 +123,6 @@ PY
           tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
       - name: Audit - Ulfah
-        shell: bash
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh Ulfah ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}"
       - name: Clear - Ulfah
         if: always()
