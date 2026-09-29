@@ -1,0 +1,51 @@
+name: Temporary hmgweb WordPress traffic correlation 20260929
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tmp-hmgweb-wp-traffic-20260929.yml'
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  correlate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+      - name: Current-hour web traffic summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > /tmp/traffic.sh <<'GUEST'
+          set -u
+          stamp="$(date -u '+%d/%b/%Y:%H:')"
+          echo "UTC_HOUR=$stamp"
+          mapfile -t fs < <(find /www/wwwlogs -maxdepth 1 -type f -name '*.log' ! -iname '*error*' ! -iname '*err*' 2>/dev/null | sort)
+          tmp=/tmp/hmg-access-hour.$$
+          : > "$tmp"
+          for f in "${fs[@]}"; do
+            grep -H "$stamp" "$f" 2>/dev/null >> "$tmp" || true
+          done
+          echo "TOTAL_CURRENT_HOUR=$(wc -l < "$tmp")"
+          echo '--- REQUESTS_PER_MINUTE ---'
+          awk '{for(i=1;i<=NF;i++) if($i ~ /^\[[0-9][0-9]\/[A-Z][a-z][a-z]\/[0-9]{4}:/){print substr($i,2,17); break}}' "$tmp" | sort | uniq -c | sort -k2,2
+          echo '--- TOP_IPS ---'
+          awk -F: '{line=$0; sub(/^[^:]+:/,"",line); split(line,a," "); print a[1]}' "$tmp" | sort | uniq -c | sort -nr | head -n 12
+          echo '--- TOP_URIS ---'
+          awk -F: '{line=$0; sub(/^[^:]+:/,"",line); split(line,a," "); for(i=1;i<=length(a);i++) if(a[i] ~ /^\//){u=a[i]; sub(/\?.*/,"",u); print u; break}}' "$tmp" | sort | uniq -c | sort -nr | head -n 15
+          echo '--- XMLRPC_BY_LOG ---'
+          awk -F: '$0 ~ /\/xmlrpc\.php/ {print $1}' "$tmp" | sort | uniq -c | sort -nr | head -n 12
+          echo '--- IP_185_BY_LOG ---'
+          awk -F: '$0 ~ /185\.177\.72\.9/ {print $1}' "$tmp" | sort | uniq -c | sort -nr | head -n 12
+          echo '--- XMLRPC_PER_MINUTE ---'
+          grep '/xmlrpc.php' "$tmp" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\[[0-9][0-9]\/[A-Z][a-z][a-z]\/[0-9]{4}:/){print substr($i,2,17); break}}' | sort | uniq -c | sort -k2,2
+          echo '--- IP185_PER_MINUTE ---'
+          grep '185.177.72.9' "$tmp" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\[[0-9][0-9]\/[A-Z][a-z][a-z]\/[0-9]{4}:/){print substr($i,2,17); break}}' | sort | uniq -c | sort -k2,2
+          rm -f "$tmp"
+          GUEST
+          az vm run-command invoke -g HMGWEB_GROUP -n hmgweb --command-id RunShellScript --scripts @/tmp/traffic.sh -o json | jq -r '.value[]?.message // empty'
