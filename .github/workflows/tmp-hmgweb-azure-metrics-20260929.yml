@@ -37,6 +37,9 @@ jobs:
           end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo '=== CPU 45M ==='
           az monitor metrics list --resource "$vmid" --metric "Percentage CPU" --interval PT1M --aggregation Average Maximum --start-time "$start" --end-time "$end" -o json | jq -r '.value[0].timeseries[0].data[] | select(.average != null) | "\(.timeStamp) avg=\(.average) max=\(.maximum)"'
+          echo '=== CPU HIGH POINTS 6H (MAX >= 25%) ==='
+          start6="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          az monitor metrics list --resource "$vmid" --metric "Percentage CPU" --interval PT1M --aggregation Average Maximum --start-time "$start6" --end-time "$end" -o json | jq -r '.value[0].timeseries[0].data[] | select((.maximum // 0) >= 25) | "\(.timeStamp) avg=\(.average) max=\(.maximum)"'
           echo '=== CPU CREDITS 45M ==='
           az monitor metrics list --resource "$vmid" --metric "CPU Credits Remaining,CPU Credits Consumed" --interval PT1M --aggregation Average Minimum Maximum --start-time "$start" --end-time "$end" -o json | jq -r '.value[] | .name.value as $n | .timeseries[].data[] | select(.average != null or .minimum != null or .maximum != null) | "\($n) \(.timeStamp) avg=\(.average // 0) min=\(.minimum // 0) max=\(.maximum // 0)"'
           echo '=== NETWORK/DISK 15M ==='
