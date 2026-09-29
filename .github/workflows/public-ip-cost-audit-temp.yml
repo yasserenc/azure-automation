@@ -29,9 +29,10 @@ jobs:
 
           query_period() {
             label="$1"
-            timeframe="$2"
+            from="$2"
+            to="$3"
 
-            body="$(jq -nc --arg tf "$timeframe" '{type:"Usage",timeframe:$tf,dataset:{granularity:"None",aggregation:{totalCost:{name:"PreTaxCost",function:"Sum"}},grouping:[{type:"Dimension",name:"ResourceType"}]}}')"
+            body="$(jq -nc --arg from "$from" --arg to "$to" '{type:"Usage",timeframe:"Custom",timePeriod:{from:$from,to:$to},dataset:{granularity:"None",aggregation:{totalCost:{name:"PreTaxCost",function:"Sum"}},grouping:[{type:"Dimension",name:"ResourceType"}]}}')"
 
             response="$(az rest --method post --url "https://management.azure.com/subscriptions/$sub/providers/Microsoft.CostManagement/query?api-version=2025-03-01" --headers Content-Type=application/json --body "$body" --only-show-errors)"
 
@@ -51,8 +52,8 @@ jobs:
             echo "AUDIT|$target|$label|$current_count|$result"
           }
 
-          query_period last_full_month TheLastMonth
-          query_period month_to_date MonthToDate
+          query_period last_full_month 2026-08-01T00:00:00Z 2026-09-01T00:00:00Z
+          query_period month_to_date 2026-09-01T00:00:00Z 2026-09-30T00:00:00Z
           EOF
           chmod +x "$RUNNER_TEMP/audit-public-ip-cost.sh"
 
@@ -63,6 +64,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
       - name: Audit - rfcy
+        continue-on-error: true
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh rfcy ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}"
       - name: Clear - rfcy
         if: always()
@@ -75,6 +77,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID_wdt }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
       - name: Audit - wdt
+        continue-on-error: true
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh wdt ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}"
       - name: Clear - wdt
         if: always()
@@ -87,6 +90,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID_altaaf }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
       - name: Audit - altaaf
+        continue-on-error: true
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh altaaf ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}"
       - name: Clear - altaaf
         if: always()
@@ -99,6 +103,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID_oamal }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
       - name: Audit - oamal
+        continue-on-error: true
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh oamal ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}"
       - name: Clear - oamal
         if: always()
@@ -111,6 +116,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID_ALBAN }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}
       - name: Audit - ALBAN
+        continue-on-error: true
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh ALBAN ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}"
       - name: Clear - ALBAN
         if: always()
@@ -123,6 +129,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
       - name: Audit - Ulfah
+        continue-on-error: true
         run: "$RUNNER_TEMP/audit-public-ip-cost.sh Ulfah ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}"
       - name: Clear - Ulfah
         if: always()
