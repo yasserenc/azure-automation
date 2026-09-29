@@ -1,0 +1,39 @@
+name: Temporary hmgweb backup root cause verify 20260929
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tmp-hmgweb-backup-verify-20260929.yml'
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+      - name: Verify backup timer and service
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > /tmp/verify.sh <<'GUEST'
+          set -u
+          echo '=== TIMER_PROPERTIES ==='
+          systemctl show abedawear-v15-backup.timer -p Id -p Unit -p ActiveState -p SubState -p LastTriggerUSec -p NextElapseUSecRealtime -p Persistent 2>/dev/null || true
+          echo '=== TIMER_DEFINITION ==='
+          systemctl cat abedawear-v15-backup.timer 2>/dev/null || true
+          echo '=== SERVICE_PROPERTIES ==='
+          systemctl show abedawear-v15-backup.service -p Id -p ActiveState -p SubState -p Result -p ExecMainStartTimestamp -p ExecMainExitTimestamp -p CPUUsageNSec -p MemoryPeak -p IOReadBytes -p IOWriteBytes -p ExecStart 2>/dev/null || true
+          echo '=== SERVICE_JOURNAL_8H ==='
+          journalctl -u abedawear-v15-backup.service --since '8 hours ago' -o short-iso --no-pager 2>/dev/null | tail -n 120 || true
+          echo '=== SERVICE_FILE ==='
+          systemctl cat abedawear-v15-backup.service 2>/dev/null | sed -E 's/(PASSWORD|PASS|SECRET|TOKEN|KEY)=[^ ]+/<redacted>/Ig' || true
+          echo '=== RELATED_RECENT_FILES ==='
+          find /var/backups /opt /srv /www -xdev -type f -newermt '2026-09-29 17:55:00 UTC' ! -newermt '2026-09-29 18:10:00 UTC' -printf '%TY-%Tm-%TdT%TH:%TM:%TSZ %s %p\n' 2>/dev/null | sort | tail -n 80 || true
+          GUEST
+          az vm run-command invoke -g HMGWEB_GROUP -n hmgweb --command-id RunShellScript --scripts @/tmp/verify.sh -o json | jq -r '.value[]?.message // empty'
