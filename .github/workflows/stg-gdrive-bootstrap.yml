@@ -61,7 +61,7 @@ jobs:
           echo "::add-mask::$SA_B64"
 
           REMOTE_SCRIPT="$(cat <<'REMOTE'
-          set -euo pipefail
+          set -eu
 
           TARGET_USER="usr"
           TARGET_HOME="/home/usr"
@@ -135,9 +135,21 @@ jobs:
           REMOTE_SCRIPT="${REMOTE_SCRIPT//__EXPECTED_EMAIL__/$EXPECTED_SERVICE_ACCOUNT}"
           REMOTE_SCRIPT="${REMOTE_SCRIPT//__RUN_ID__/$GITHUB_RUN_ID}"
 
-          az vm run-command invoke             --resource-group "$RESOURCE_GROUP"             --name "$VM_NAME"             --command-id RunShellScript             --scripts "$REMOTE_SCRIPT"             --query 'value[0].message'             --output tsv
+          RUN_RESULT="$(az vm run-command invoke \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "$REMOTE_SCRIPT" \
+            --query 'value[0].message' \
+            --output tsv)"
 
-          unset REMOTE_SCRIPT SA_B64 GDRIVE_SERVICE_ACCOUNT_JSON
+          printf '%s\n' "$RUN_RESULT"
+          if ! grep -Fq "SUCCESS: stg-srv can authenticate to the bkp Shared Drive and passed upload/download/compare/delete verification." <<<"$RUN_RESULT"; then
+            echo "::error::Azure Run Command did not report the required end-to-end success sentinel."
+            exit 20
+          fi
+
+          unset RUN_RESULT REMOTE_SCRIPT SA_B64 GDRIVE_SERVICE_ACCOUNT_JSON
 
       - name: Verify Azure VM state
         shell: bash
