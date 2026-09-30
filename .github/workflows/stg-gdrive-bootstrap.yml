@@ -15,7 +15,6 @@ jobs:
   bootstrap:
     name: Configure and verify rclone on stg-srv
     runs-on: ubuntu-latest
-    environment: vm-storage
     timeout-minutes: 15
 
     steps:
