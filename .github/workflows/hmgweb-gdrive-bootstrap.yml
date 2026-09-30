@@ -1,0 +1,167 @@
+name: Bootstrap hmgweb Google Drive access
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/hmgweb-gdrive-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Configure and verify rclone on hmgweb
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Azure login - rfcy
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+
+      - name: Validate credential and configure hmgweb
+        shell: bash
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          EXPECTED_SERVICE_ACCOUNT: photos-to-drive@aerial-matrix-275415.iam.gserviceaccount.com
+          SHARED_DRIVE_ID: 0AIsI2I-QPJHnUk9PVA
+          RESOURCE_GROUP: HMGWEB_GROUP
+          VM_NAME: hmgweb
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GDRIVE_SERVICE_ACCOUNT_JSON:-}" ]]; then
+            echo "::error::GDRIVE_SERVICE_ACCOUNT_JSON is empty or unavailable."
+            exit 10
+          fi
+
+          python3 - <<'PY'
+          import json, os
+          raw = os.environ["GDRIVE_SERVICE_ACCOUNT_JSON"]
+          data = json.loads(raw)
+          expected = os.environ["EXPECTED_SERVICE_ACCOUNT"]
+          if data.get("type") != "service_account":
+              raise SystemExit("Secret is not a Google service-account JSON credential")
+          if data.get("client_email") != expected:
+              raise SystemExit("Service-account email mismatch")
+          if not data.get("private_key"):
+              raise SystemExit("Service-account JSON has no private_key")
+          print("Google service-account credential structure verified.")
+          PY
+
+          SA_B64="$(printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" | base64 -w0)"
+          echo "::add-mask::$SA_B64"
+
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
+          set -eu
+          SELF="$0"
+          trap 'rm -f "$SELF"' EXIT
+
+          TARGET_USER="usr"
+          TARGET_HOME="/home/usr"
+          RCLONE_DIR="$TARGET_HOME/.config/rclone"
+          CRED_FILE="$RCLONE_DIR/gdrive-service-account.json"
+          CONFIG_FILE="$RCLONE_DIR/rclone.conf"
+          DRIVE_ID="__DRIVE_ID__"
+          EXPECTED_EMAIL="__EXPECTED_EMAIL__"
+          TEST_ID="hmgweb-gdrive-__RUN_ID__"
+          SA_B64='__SA_B64__'
+
+          if ! command -v rclone >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq rclone
+          fi
+
+          install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" "$RCLONE_DIR"
+          umask 077
+          printf '%s' "$SA_B64" | base64 -d > "$CRED_FILE"
+
+          python3 - "$CRED_FILE" "$EXPECTED_EMAIL" <<'PY'
+          import json, sys
+          path, expected = sys.argv[1], sys.argv[2]
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+          if data.get("type") != "service_account":
+              raise SystemExit("Credential on VM is not a service-account JSON")
+          if data.get("client_email") != expected:
+              raise SystemExit("Credential on VM has unexpected client_email")
+          if not data.get("private_key"):
+              raise SystemExit("Credential on VM has no private_key")
+          PY
+
+          chown "$TARGET_USER:$TARGET_USER" "$CRED_FILE"
+          chmod 600 "$CRED_FILE"
+
+          cat > "$CONFIG_FILE" <<EOF
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = $CRED_FILE
+          team_drive = $DRIVE_ID
+          EOF
+          chown "$TARGET_USER:$TARGET_USER" "$CONFIG_FILE"
+          chmod 600 "$CONFIG_FILE"
+
+          runuser -u "$TARGET_USER" -- rclone --config "$CONFIG_FILE" about gdrive: >/dev/null
+
+          TEST_SRC="/tmp/$TEST_ID.source"
+          TEST_DST="/tmp/$TEST_ID.download"
+          TEST_REMOTE="_chatgpt_verify/$TEST_ID.txt"
+          printf 'hmgweb Google Drive verification %s\n' "$TEST_ID" > "$TEST_SRC"
+          chown "$TARGET_USER:$TARGET_USER" "$TEST_SRC"
+
+          runuser -u "$TARGET_USER" -- rclone --config "$CONFIG_FILE" copyto "$TEST_SRC" "gdrive:$TEST_REMOTE"
+          runuser -u "$TARGET_USER" -- rclone --config "$CONFIG_FILE" copyto "gdrive:$TEST_REMOTE" "$TEST_DST"
+          cmp "$TEST_SRC" "$TEST_DST"
+
+          runuser -u "$TARGET_USER" -- rclone --config "$CONFIG_FILE" deletefile "gdrive:$TEST_REMOTE"
+          runuser -u "$TARGET_USER" -- rclone --config "$CONFIG_FILE" rmdir "gdrive:_chatgpt_verify" >/dev/null 2>&1 || true
+          rm -f "$TEST_SRC" "$TEST_DST"
+
+          unset SA_B64
+          echo "SUCCESS: hmgweb can authenticate to the bkp Shared Drive and passed upload/download/compare/delete verification."
+          REMOTE
+          )"
+
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__SA_B64__/$SA_B64}"
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__DRIVE_ID__/$SHARED_DRIVE_ID}"
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__EXPECTED_EMAIL__/$EXPECTED_SERVICE_ACCOUNT}"
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__RUN_ID__/$GITHUB_RUN_ID}"
+
+          RUN_RESULT="$(az vm run-command invoke \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "$REMOTE_SCRIPT" \
+            --query 'value[0].message' \
+            --output tsv)"
+
+          printf '%s\n' "$RUN_RESULT"
+          if ! grep -Fq "SUCCESS: hmgweb can authenticate to the bkp Shared Drive and passed upload/download/compare/delete verification." <<<"$RUN_RESULT"; then
+            echo "::error::Azure Run Command did not report the required end-to-end success sentinel."
+            exit 20
+          fi
+
+          unset RUN_RESULT REMOTE_SCRIPT SA_B64 GDRIVE_SERVICE_ACCOUNT_JSON
+
+      - name: Verify Azure VM state
+        shell: bash
+        env:
+          RESOURCE_GROUP: HMGWEB_GROUP
+          VM_NAME: hmgweb
+        run: |
+          set -euo pipefail
+          state="$(az vm get-instance-view \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$VM_NAME" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]" \
+            --output tsv)"
+          echo "VM state after configuration: $state"
+          [[ "$state" == "VM running" ]]
