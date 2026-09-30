@@ -23,12 +23,13 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
 
-      - name: Validate and create VM
+      - name: Create and verify VM
         shell: bash
         run: |
           set -Eeuo pipefail
 
           LOCATION="westeurope"
+          ZONE="1"
           SIZE="Standard_B1ls"
           RG="RCLONE-TEST_GROUP"
           VM="rclone-test"
@@ -36,18 +37,10 @@ jobs:
           SOURCE_RG="STG-SRV_GROUP"
           SOURCE_VM="stg-srv"
 
-          echo "Checking SKU availability..."
-          SKU_COUNT="$(az vm list-skus --location "$LOCATION" --size "$SIZE" --all             --query "[?name=='$SIZE' && (length(restrictions)==\`0\`)].name | length(@)" -o tsv)"
-          if [[ "$SKU_COUNT" != "1" ]]; then
-            echo "::error::$SIZE is unavailable or restricted in $LOCATION for this subscription."
-            az vm list-skus --location "$LOCATION" --size "$SIZE" --all               --query "[?name=='$SIZE'].{name:name,restrictions:restrictions}" -o json
-            exit 11
-          fi
-
           SRC_NIC_ID="$(az vm show -g "$SOURCE_RG" -n "$SOURCE_VM"             --query "networkProfile.networkInterfaces[0].id" -o tsv)"
           SUBNET_ID="$(az network nic show --ids "$SRC_NIC_ID"             --query "ipConfigurations[0].subnet.id" -o tsv)"
           test -n "$SUBNET_ID"
-          echo "Reusing existing subnet: $SUBNET_ID"
+          echo "Reusing subnet: $SUBNET_ID"
 
           az group create -n "$RG" -l "$LOCATION" -o none
 
@@ -56,17 +49,28 @@ jobs:
           fi
 
           if ! az vm show -g "$RG" -n "$VM" >/dev/null 2>&1; then
-            az vm create               -g "$RG"               -n "$VM"               -l "$LOCATION"               --size "$SIZE"               --image "Canonical:ubuntu-24_04-lts:server:latest"               --admin-username usr               --generate-ssh-keys               --nics "$NIC"               --os-disk-name "${VM}-osdisk"               --os-disk-size-gb 30               --storage-sku Standard_LRS               --security-type Standard               -o none
+            az vm create               -g "$RG"               -n "$VM"               -l "$LOCATION"               --zone "$ZONE"               --size "$SIZE"               --image "Canonical:ubuntu-24_04-lts:server:latest"               --admin-username usr               --generate-ssh-keys               --nics "$NIC"               --ephemeral-os-disk true               --ephemeral-os-disk-placement CacheDisk               --os-disk-caching ReadOnly               --storage-sku Standard_LRS               --security-type Standard               -o none
           fi
 
           echo "=== VM ==="
-          az vm show -g "$RG" -n "$VM" -d             --query "{name:name,location:location,size:hardwareProfile.vmSize,privateIp:privateIps,publicIp:publicIps,osDisk:storageProfile.osDisk.name,diskSku:storageProfile.osDisk.managedDisk.storageAccountType,provisioningState:provisioningState}"             -o json
+          VM_JSON="$(az vm show -g "$RG" -n "$VM" -d             --query "{name:name,location:location,zones:zones,size:hardwareProfile.vmSize,privateIp:privateIps,publicIp:publicIps,provisioningState:provisioningState,diffOption:storageProfile.osDisk.diffDiskSettings.option,diffPlacement:storageProfile.osDisk.diffDiskSettings.placement,managedDiskId:storageProfile.osDisk.managedDisk.id,diskSku:storageProfile.osDisk.managedDisk.storageAccountType,caching:storageProfile.osDisk.caching}"             -o json)"
+          echo "$VM_JSON"
 
-          echo "=== POWER ==="
-          az vm get-instance-view -g "$RG" -n "$VM"             --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]" -o tsv
+          [[ "$(jq -r '.size' <<<"$VM_JSON")" == "$SIZE" ]]
+          [[ "$(jq -r '.diffOption' <<<"$VM_JSON")" == "Local" ]]
+          [[ "$(jq -r '.diffPlacement' <<<"$VM_JSON")" == "CacheDisk" ]]
+          [[ "$(jq -r '.publicIp // ""' <<<"$VM_JSON")" == "" ]]
+
+          POWER="$(az vm get-instance-view -g "$RG" -n "$VM"             --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]" -o tsv)"
+          echo "Power state: $POWER"
+          [[ "$POWER" == "VM running" ]]
 
           PIP_COUNT="$(az network public-ip list -g "$RG" --query "length(@)" -o tsv)"
           echo "Public IP resources in $RG: $PIP_COUNT"
           [[ "$PIP_COUNT" == "0" ]]
 
-          echo "SUCCESS: rclone-test VM created and verified."
+          DISK_COUNT="$(az disk list -g "$RG" --query "length(@)" -o tsv)"
+          echo "Managed disk resources in $RG: $DISK_COUNT"
+          [[ "$DISK_COUNT" == "0" ]]
+
+          echo "SUCCESS: rclone-test Standard_B1ls ephemeral OS VM created and verified."
