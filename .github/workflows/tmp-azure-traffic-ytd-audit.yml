@@ -25,7 +25,7 @@ jobs:
           : > "$RUNNER_TEMP/traffic-results.jsonl"
 
           cat > "$RUNNER_TEMP/query-traffic.py" <<'PY'
-          import json, os, subprocess, sys, datetime
+          import json, os, subprocess, sys, datetime, time
 
           target = os.environ["TARGET"]
           sub = os.environ["SUBSCRIPTION_ID"]
@@ -51,7 +51,7 @@ jobs:
                       }
                   },
                   "grouping": [
-                      {"type": "Dimension", "name": "MeterName"},
+                      {"type": "Dimension", "name": "Meter"},
                       {"type": "Dimension", "name": "UnitOfMeasure"}
                   ]
               }
@@ -63,11 +63,24 @@ jobs:
               "--headers", "Content-Type=application/json",
               "--body", json.dumps(body), "-o", "json"
           ]
-          try:
-              raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
-              data = json.loads(raw)
-          except subprocess.CalledProcessError as e:
-              print(e.output, file=sys.stderr)
+          data = None
+          last_error = ""
+          for attempt, delay in enumerate([0, 5, 10, 20, 30, 45], start=1):
+              if delay:
+                  time.sleep(delay)
+              try:
+                  raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
+                  data = json.loads(raw)
+                  break
+              except subprocess.CalledProcessError as e:
+                  last_error = e.output or ""
+                  if ("429" in last_error or "Too Many Requests" in last_error) and attempt < 6:
+                      print(f"Cost query throttled for {target}; retry {attempt}/6.", file=sys.stderr)
+                      continue
+                  print(last_error, file=sys.stderr)
+                  break
+
+          if data is None:
               result = {"target": target, "status": "error", "error": "cost-query-failed"}
               print("AUDIT_RESULT_JSON=" + json.dumps(result, separators=(",",":")))
               with open(os.environ["RESULTS_FILE"], "a") as f:
@@ -91,7 +104,7 @@ jobs:
 
           for arr in rows:
               row = dict(zip(columns, arr))
-              meter = str(row.get("MeterName", ""))
+              meter = str(row.get("Meter", row.get("MeterName", "")))
               unit = str(row.get("UnitOfMeasure", ""))
               qty = num(row.get("UsageQuantity", row.get("totalUsage", 0)))
               cost = num(row.get("PreTaxCost", row.get("Cost", row.get("totalCost", 0))))
