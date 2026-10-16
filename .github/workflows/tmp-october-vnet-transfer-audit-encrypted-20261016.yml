@@ -1,0 +1,333 @@
+name: Temporary encrypted October 2026 virtual-network transfer audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/tmp-october-vnet-transfer-audit-encrypted-20261016.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Initialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RESULTS_FILE=$RUNNER_TEMP/traffic-results.jsonl" >> "$GITHUB_ENV"
+          : > "$RUNNER_TEMP/traffic-results.jsonl"
+
+          cat > "$RUNNER_TEMP/query-traffic.py" <<'PY'
+          import json, os, subprocess, sys, datetime, time
+
+          target = os.environ["TARGET"]
+          sub = os.environ["SUBSCRIPTION_ID"]
+          now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
+          body = {
+              "type": "Usage",
+              "timeframe": "Custom",
+              "timePeriod": {
+                  "from": "2026-10-01T00:00:00Z",
+                  "to": now
+              },
+              "dataset": {
+                  "granularity": "None",
+                  "aggregation": {
+                      "totalCost": {"name": "PreTaxCost", "function": "Sum"},
+                      "totalUsage": {"name": "UsageQuantity", "function": "Sum"}
+                  },
+                  "filter": {
+                      "dimensions": {
+                          "name": "MeterCategory",
+                          "operator": "In",
+                          "values": ["Virtual Network"]
+                      }
+                  },
+                  "grouping": [
+                      {"type": "Dimension", "name": "Meter"},
+                      {"type": "Dimension", "name": "UnitOfMeasure"}
+                  ]
+              }
+          }
+
+          url = f"https://management.azure.com/subscriptions/{sub}/providers/Microsoft.CostManagement/query?api-version=2026-06-01"
+          cmd = [
+              "az", "rest", "--method", "post", "--url", url,
+              "--headers", "Content-Type=application/json",
+              "--body", json.dumps(body), "-o", "json"
+          ]
+          data = None
+          last_error = ""
+          for attempt, delay in enumerate([0, 5, 10, 20, 30, 45], start=1):
+              if delay:
+                  time.sleep(delay)
+              try:
+                  raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
+                  data = json.loads(raw)
+                  break
+              except subprocess.CalledProcessError as e:
+                  last_error = e.output or ""
+                  if ("429" in last_error or "Too Many Requests" in last_error) and attempt < 6:
+                      print(f"Cost query throttled for {target}; retry {attempt}/6.", file=sys.stderr)
+                      continue
+                  print("AUDIT_API_ERROR target=" + target, file=sys.stderr)
+                  break
+
+          if data is None:
+              result = {"target": target, "status": "error", "error": "cost-query-failed"}
+              print("AUDIT_QUERY_FAILED target=" + target)
+              with open(os.environ["RESULTS_FILE"], "a") as f:
+                  f.write(json.dumps(result, separators=(",",":")) + "\n")
+              sys.exit(1)
+
+          props = data.get("properties", {})
+          columns = [c.get("name") for c in props.get("columns", [])]
+          rows = props.get("rows", [])
+
+          details = []
+          total_gb = 0.0
+          cost_by_currency = {}
+          non_gb = []
+
+          def num(v):
+              try:
+                  return float(v or 0)
+              except Exception:
+                  return 0.0
+
+          for arr in rows:
+              row = dict(zip(columns, arr))
+              meter = str(row.get("Meter", row.get("MeterName", "")))
+              unit = str(row.get("UnitOfMeasure", ""))
+              qty = num(row.get("UsageQuantity", row.get("totalUsage", 0)))
+              cost = num(row.get("PreTaxCost", row.get("Cost", row.get("totalCost", 0))))
+              currency = str(row.get("Currency", "")) or "UNKNOWN"
+              entry = {"meter": meter, "unit": unit, "quantity": qty, "cost": cost, "currency": currency}
+              details.append(entry)
+
+              normalized = unit.lower().replace(" ", "")
+              if normalized in {"gb","1gb"}:
+                  total_gb += qty
+              else:
+                  non_gb.append(entry)
+              cost_by_currency[currency] = cost_by_currency.get(currency, 0.0) + cost
+
+          total_cost = sum(cost_by_currency.values())
+          if not rows:
+              status = "free"
+          elif abs(total_cost) < 0.0000005:
+              status = "free"
+          else:
+              status = "paid-or-mixed"
+
+          result = {
+              "target": target,
+              "status": status,
+              "period_from": "2026-10-01T00:00:00Z",
+              "period_to": now,
+              "total_gb": total_gb,
+              "cost_by_currency": cost_by_currency,
+              "meters": details,
+              "non_gb_bandwidth_rows": non_gb
+          }
+          encoded = json.dumps(result, separators=(",",":"))
+          print("AUDIT_RESULT_READY target=" + target)
+          with open(os.environ["RESULTS_FILE"], "a") as f:
+              f.write(encoded + "\n")
+          PY
+
+      - name: Login - rfcy
+        id: login_rfcy
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+
+      - name: Audit - rfcy
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: rfcy
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+          LOGIN_OUTCOME: ${{ steps.login_rfcy.outcome }}
+        run: |
+          if [[ "$LOGIN_OUTCOME" == "success" ]]; then
+            python3 "$RUNNER_TEMP/query-traffic.py"
+          else
+            echo '{"target":"rfcy","status":"error","error":"oidc-login-failed"}' >> "$RESULTS_FILE"
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - wdt
+        id: login_wdt
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_wdt }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_wdt }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+
+      - name: Audit - wdt
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: wdt
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_wdt }}
+          LOGIN_OUTCOME: ${{ steps.login_wdt.outcome }}
+        run: |
+          if [[ "$LOGIN_OUTCOME" == "success" ]]; then
+            python3 "$RUNNER_TEMP/query-traffic.py"
+          else
+            echo '{"target":"wdt","status":"error","error":"oidc-login-failed"}' >> "$RESULTS_FILE"
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - altaaf
+        id: login_altaaf
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_altaaf }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_altaaf }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+
+      - name: Audit - altaaf
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: altaaf
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_altaaf }}
+          LOGIN_OUTCOME: ${{ steps.login_altaaf.outcome }}
+        run: |
+          if [[ "$LOGIN_OUTCOME" == "success" ]]; then
+            python3 "$RUNNER_TEMP/query-traffic.py"
+          else
+            echo '{"target":"altaaf","status":"error","error":"oidc-login-failed"}' >> "$RESULTS_FILE"
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - oamal
+        id: login_oamal
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_oamal }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_oamal }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+
+      - name: Audit - oamal
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: oamal
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_oamal }}
+          LOGIN_OUTCOME: ${{ steps.login_oamal.outcome }}
+        run: |
+          if [[ "$LOGIN_OUTCOME" == "success" ]]; then
+            python3 "$RUNNER_TEMP/query-traffic.py"
+          else
+            echo '{"target":"oamal","status":"error","error":"oidc-login-failed"}' >> "$RESULTS_FILE"
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - ALBAN
+        id: login_alban
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_ALBAN }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_ALBAN }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}
+
+      - name: Audit - ALBAN
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: ALBAN
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_ALBAN }}
+          LOGIN_OUTCOME: ${{ steps.login_alban.outcome }}
+        run: |
+          if [[ "$LOGIN_OUTCOME" == "success" ]]; then
+            python3 "$RUNNER_TEMP/query-traffic.py"
+          else
+            echo '{"target":"ALBAN","status":"error","error":"oidc-login-failed"}' >> "$RESULTS_FILE"
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Login - Ulfah
+        id: login_ulfah
+        continue-on-error: true
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_Ulfah }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_Ulfah }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+
+      - name: Audit - Ulfah
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET: Ulfah
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_Ulfah }}
+          LOGIN_OUTCOME: ${{ steps.login_ulfah.outcome }}
+        run: |
+          if [[ "$LOGIN_OUTCOME" == "success" ]]; then
+            python3 "$RUNNER_TEMP/query-traffic.py"
+          else
+            echo '{"target":"Ulfah","status":"error","error":"oidc-login-failed"}' >> "$RESULTS_FILE"
+          fi
+          az account clear >/dev/null 2>&1 || true
+
+      - name: Encrypt private cost report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(wc -l < "$RESULTS_FILE")" -eq 6
+          cat > "$RUNNER_TEMP/ephemeral-audit.crt" <<'CERT'
+          -----BEGIN CERTIFICATE-----
+          MIIENTCCAp2gAwIBAgIURKSUkLgXOkTATo4wzdkgeMwy3cgwDQYJKoZIhvcNAQEL
+          BQAwKjEoMCYGA1UEAwwfZXBoZW1lcmFsLXByaXZhdGUtYmlsbGluZy1hdWRpdDAe
+          Fw0yNjEwMTYxMzE0NDFaFw0yNjEwMTcxMzE0NDFaMCoxKDAmBgNVBAMMH2VwaGVt
+          ZXJhbC1wcml2YXRlLWJpbGxpbmctYXVkaXQwggGiMA0GCSqGSIb3DQEBAQUAA4IB
+          jwAwggGKAoIBgQDNfYgVAqbYXepqbSNrUj3Bv1SGba1KbmoJ4b4pPnaYPWWKhmy6
+          NHNHeRVyVe0h5HvYsYNdEZvceSXKSn8Tlix7XFEXqo7dv09Z2SQYNpjXyvIYTjeS
+          oiMxC2tv8nyA6eiRijPINg75KDEJUqVZB9ZCq8wHevE8xvyVcPE3ohMIs8V9RU9a
+          7hgb1gzKdrsH/CkRgNZ22OoxnL2s0piCKolHLAOmwNNhprB78a75b8PBXxVDKAm1
+          QQq97K3aK3yskI5r1e3GuDoqS4gDkF2znNrHaHL52HkikXJ5qWbMm5ODE/NzFLDJ
+          BJP4eyV+C7TAIlxjTwSZaom25RNHit2MRNeLqgta5glh6fN/Ijz1nX/oEPq+nZBG
+          lFfG/lqU6Xe0ef6QJG5rdP47RrHCti7YpRh/V3weaQP2JSkrpMrBJ6wvoZXGaOHU
+          6VgsJ+W4+sZjMU727y932D7poBEEED+rP6DqGigNHZrIfnKRCYjdFMsgMIf8kuNL
+          EN2nWlH7M9NQJ+0CAwEAAaNTMFEwHQYDVR0OBBYEFG16538ZOCAJA7akZF0nWiQF
+          PMe6MB8GA1UdIwQYMBaAFG16538ZOCAJA7akZF0nWiQFPMe6MA8GA1UdEwEB/wQF
+          MAMBAf8wDQYJKoZIhvcNAQELBQADggGBAGvB7FvHfjz6jiUHxdV6M+XJyeSln5Rp
+          WkT6svlM9pGoZ5BXNvl4rBNOEWgzAoG4fyhBlJzOEbkiiNFSwSjvg7Irh8o7yiNX
+          r+7thyD+znPJ4nY72o8lpM1eMDcw6Ml/N3a7uBo6ev9zCF7C4Yol4gCx1ucexch0
+          qch99zYKn1L/kdEgr1DaifaA7lYwKsRLmgiB2Yl1kcESnW8jn8gW4zg4Y0ZcYtpH
+          Rynz4EgeIa7DTUq9+CyVt5R80qPCRuc/ETwisFYcto+x8eYCHMQw6+wrKE5imL1E
+          pBZWC0ciw8wfYUE/V3YLeLMu/wcxPrITmdPgPgFDlCrTffNWGNo01AEkGZrmB2I4
+          YOu7feodcF/1nmKtodpTYUx2JvxleLcS9jlfAsX6q5/XZud0wTyTXyWhxsr4RAqd
+          RfQdC7RKUMowXYI2Y4z4Kwri3K/zWU6tYsZmGYDcgiL14LN07PMkwsL3QCbsR3U3
+          xPYodtlqo/Nlvc3lzBoKNTsZwyUknNLHrg==
+          -----END CERTIFICATE-----
+          CERT
+          openssl cms -encrypt -aes256 -binary -in "$RESULTS_FILE" -out "$RUNNER_TEMP/report-encrypted.der" -outform DER "$RUNNER_TEMP/ephemeral-audit.crt"
+          echo "ENCRYPTED_BILLING_AUDIT_BASE64_START"
+          base64 -w0 "$RUNNER_TEMP/report-encrypted.der"
+          echo
+          echo "ENCRYPTED_BILLING_AUDIT_BASE64_END"
