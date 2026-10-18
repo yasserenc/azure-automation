@@ -1,0 +1,43 @@
+name: RFCY HMGWEB isolated restore independent status 2026-10-18
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tmp-rfcy-restore-status-20261018.yml']
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Azure login RFCY
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+      - name: Read-only inventory of exact target
+        shell: bash
+        env:
+          SUB: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+        run: |
+          set -Eeuo pipefail
+          test "$(az account show --query id -o tsv)" = "$SUB"
+          RG="hmgweb-20261007-test-rg"
+          echo "RFCY_RESTORE_STATUS_BEGIN"
+          echo "test_group_exists=$(az group exists -n "$RG" -o tsv)"
+          if [[ "$(az group exists -n "$RG" -o tsv)" == "true" ]]; then
+            echo "resources:"
+            az resource list -g "$RG" --query "[].{name:name,type:type,location:location}" -o json
+            echo "disk:"
+            az disk list -g "$RG" --query "[].{name:name,provisioningState:provisioningState,diskState:diskState,diskSizeGB:diskSizeGB,sku:sku.name}" -o json
+            echo "vms:"
+            az vm list -g "$RG" --query "[].{name:name,provisioningState:provisioningState,size:hardwareProfile.vmSize,osDisk:storageProfile.osDisk.name}" -o json
+          fi
+          echo "RFCY_RESTORE_STATUS_END"
+      - name: Clear CLI session
+        if: always()
+        shell: bash
+        run: az account clear >/dev/null 2>&1 || true
