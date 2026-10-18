@@ -1,0 +1,34 @@
+name: RFCY HMGWEB test public web 2026-10-18
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tmp-rfcy-hmgweb-public-web-20261018.yml']
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  allow-test-web:
+    name: Configure restored RFCY test VM public IPv4 plus 22 80 443
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: rfcy-hmgweb-test-public-20261018
+      cancel-in-progress: false
+    steps:
+      - name: Check out precise target-scoped script
+        uses: actions/checkout@v4
+      - name: Authenticate to RFCY via existing GitHub OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+      - name: Create PIP, allow requested ingress, verify external reachability
+        shell: bash
+        env:
+          RFCY_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+        run: bash scripts/rfcy-hmgweb-test-public-web-20261018.sh
+      - name: Clear Azure login
+        if: always()
+        shell: bash
+        run: az account clear >/dev/null 2>&1 || true
