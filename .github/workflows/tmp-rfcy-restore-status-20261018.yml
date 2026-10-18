@@ -36,6 +36,16 @@ jobs:
             echo "vms:"
             az vm list -g "$RG" --query "[].{name:name,provisioningState:provisioningState,size:hardwareProfile.vmSize,osDisk:storageProfile.osDisk.name}" -o json
           fi
+          if az vm show -g "$RG" -n hmgweb-20261007-test >/dev/null 2>&1; then
+            echo "vm_instance_power:"
+            az vm get-instance-view -g "$RG" -n hmgweb-20261007-test --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]" -o tsv
+            echo "vm_provisioning:"
+            az vm show -g "$RG" -n hmgweb-20261007-test --query provisioningState -o tsv
+            echo "nic_public_ip_id:"
+            az network nic show -g "$RG" -n hmgweb-20261007-test-nic --query "ipConfigurations[0].publicIPAddress.id" -o tsv
+            echo "egress_deny:"
+            az network nsg rule show -g "$RG" --nsg-name hmgweb-20261007-test-nsg -n deny-all-outbound --query "{priority:priority,access:access,direction:direction}" -o json
+          fi
           echo "RFCY_RESTORE_STATUS_END"
       - name: Clear CLI session
         if: always()
