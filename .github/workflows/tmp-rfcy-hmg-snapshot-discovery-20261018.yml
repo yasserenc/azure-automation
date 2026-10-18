@@ -1,0 +1,58 @@
+name: RFCY HMG snapshot discovery 2026-10-18
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tmp-rfcy-hmg-snapshot-discovery-20261018.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Authenticate to RFCY with existing OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+      - name: Inspect RFCY VMs, OS disks and snapshots without changes
+        shell: bash
+        env:
+          RFCY_SUBSCRIPTION: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+        run: |
+          set -Eeuo pipefail
+          test "$(az account show --query id -o tsv)" = "$RFCY_SUBSCRIPTION"
+          az vm list --subscription "$RFCY_SUBSCRIPTION" --only-show-errors -o json > "$RUNNER_TEMP/rfcy-vms.json"
+          az snapshot list --subscription "$RFCY_SUBSCRIPTION" --only-show-errors -o json > "$RUNNER_TEMP/rfcy-snaps.json"
+          az disk list --subscription "$RFCY_SUBSCRIPTION" --only-show-errors -o json > "$RUNNER_TEMP/rfcy-disks.json"
+          python3 - "$RUNNER_TEMP/rfcy-vms.json" "$RUNNER_TEMP/rfcy-snaps.json" "$RUNNER_TEMP/rfcy-disks.json" <<'PY'
+          import json,sys
+          vms,snaps,disks=(json.load(open(p,encoding='utf-8')) for p in sys.argv[1:])
+          def tail(path): return (path or '').rsplit('/',1)[-1]
+          def disk_meta(d):
+              return {'name':d.get('name'),'rg':d.get('resourceGroup'),'location':d.get('location'),'sizeGB':d.get('diskSizeGb'),'sku':(d.get('sku') or {}).get('name'),'osType':d.get('osType'),'hyperVGeneration':d.get('hyperVGeneration'),'securityType':(d.get('securityProfile') or {}).get('securityType'),'state':d.get('provisioningState'),'zone':d.get('zones')}
+          info=[]
+          for vm in vms:
+              st=vm.get('storageProfile') or {}
+              osdisk=st.get('osDisk') or {}
+              info.append({'name':vm.get('name'),'rg':vm.get('resourceGroup'),'location':vm.get('location'),'size':(vm.get('hardwareProfile') or {}).get('vmSize'),'zone':vm.get('zones'),'osType':osdisk.get('osType'),'osDisk':tail((osdisk.get('managedDisk') or {}).get('id')),'dataDisks':len(st.get('dataDisks') or []),'securityType':(vm.get('securityProfile') or {}).get('securityType'),'state':vm.get('provisioningState')})
+          info.sort(key=lambda x:x['name'].lower())
+          rows=[]
+          for s in snaps:
+              src=(s.get('creationData') or {}).get('sourceResourceId')
+              rows.append({'name':s.get('name'),'rg':s.get('resourceGroup'),'created':s.get('timeCreated'),'sourceDisk':tail(src),'sourceResourceGroup':((src or '').lower().split('/resourcegroups/')[-1].split('/')[0] if '/resourcegroups/' in (src or '').lower() else None),'sizeGB':s.get('diskSizeGb'),'sku':(s.get('sku') or {}).get('name'),'osType':s.get('osType'),'hyperVGeneration':s.get('hyperVGeneration'),'securityType':(s.get('securityProfile') or {}).get('securityType'),'state':s.get('provisioningState'),'location':s.get('location'),'zone':s.get('zones')})
+          rows.sort(key=lambda x:(x['created'] or '',x['name']))
+          print('RFCY_DISCOVERY_BEGIN')
+          print(json.dumps({'vmCount':len(info),'vms':info,'snapshotCount':len(rows),'snapshots':rows,'diskCount':len(disks),'hmgRelatedDisks':[disk_meta(d) for d in disks if 'hmg' in d.get('name','').lower() or 'hmg' in d.get('resourceGroup','').lower()]},indent=2,sort_keys=True))
+          print('RFCY_DISCOVERY_END')
+          PY
+      - name: Clear Azure CLI session
+        if: always()
+        shell: bash
+        run: az account clear >/dev/null 2>&1 || true
