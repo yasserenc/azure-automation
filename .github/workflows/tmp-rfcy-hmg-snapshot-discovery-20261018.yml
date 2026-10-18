@@ -29,11 +29,16 @@ jobs:
           set -Eeuo pipefail
           test "$(az account show --query id -o tsv)" = "$RFCY_SUBSCRIPTION"
           az vm list --subscription "$RFCY_SUBSCRIPTION" --only-show-errors -o json > "$RUNNER_TEMP/rfcy-vms.json"
-          az snapshot list --subscription "$RFCY_SUBSCRIPTION" --only-show-errors -o json > "$RUNNER_TEMP/rfcy-snaps.json"
-          az disk list --subscription "$RFCY_SUBSCRIPTION" --only-show-errors -o json > "$RUNNER_TEMP/rfcy-disks.json"
-          python3 - "$RUNNER_TEMP/rfcy-vms.json" "$RUNNER_TEMP/rfcy-snaps.json" "$RUNNER_TEMP/rfcy-disks.json" <<'PY'
-          import json,sys
-          vms,snaps,disks=(json.load(open(p,encoding='utf-8')) for p in sys.argv[1:])
+          az group list --subscription "$RFCY_SUBSCRIPTION" --only-show-errors -o json > "$RUNNER_TEMP/rfcy-groups.json"
+          python3 - "$RUNNER_TEMP/rfcy-vms.json" "$RUNNER_TEMP/rfcy-groups.json" "$RFCY_SUBSCRIPTION" <<'PY'
+          import json,sys,subprocess
+          vms=json.load(open(sys.argv[1],encoding='utf-8'))
+          groups=json.load(open(sys.argv[2],encoding='utf-8'))
+          subscription=sys.argv[3]
+          def list_by_group(kind,rg):
+              return json.loads(subprocess.check_output(['az',kind,'list','--resource-group',rg,'--subscription',subscription,'--only-show-errors','-o','json'],text=True,timeout=120))
+          snaps=[s for g in groups for s in list_by_group('snapshot',g['name'])]
+          disks=[d for g in groups for d in list_by_group('disk',g['name'])]
           def tail(path): return (path or '').rsplit('/',1)[-1]
           def disk_meta(d):
               return {'name':d.get('name'),'rg':d.get('resourceGroup'),'location':d.get('location'),'sizeGB':d.get('diskSizeGb'),'sku':(d.get('sku') or {}).get('name'),'osType':d.get('osType'),'hyperVGeneration':d.get('hyperVGeneration'),'securityType':(d.get('securityProfile') or {}).get('securityType'),'state':d.get('provisioningState'),'zone':d.get('zones')}
