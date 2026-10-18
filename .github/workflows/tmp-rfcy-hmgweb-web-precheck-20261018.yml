@@ -1,0 +1,44 @@
+name: RFCY HMGWEB test web precheck 2026-10-18
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tmp-rfcy-hmgweb-web-precheck-20261018.yml']
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  precheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Authenticate RFCY via OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_rfcy }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID_rfcy }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+      - name: Inspect only target VM and network
+        shell: bash
+        env:
+          SUB: ${{ secrets.AZURE_SUBSCRIPTION_ID_rfcy }}
+        run: |
+          set -Eeuo pipefail
+          RG=hmgweb-20261007-test-rg
+          VM=hmgweb-20261007-test
+          NIC=hmgweb-20261007-test-nic
+          NSG=hmgweb-20261007-test-nsg
+          test "$(az account show --query id -o tsv)" = "$SUB"
+          echo "VM_INFO_BEGIN"
+          az vm show -g "$RG" -n "$VM" --query '{id:id,location:location,vmSize:hardwareProfile.vmSize,osDisk:storageProfile.osDisk.name,network:networkProfile.networkInterfaces,provisioningState:provisioningState}' -o json
+          echo "NIC_INFO_BEGIN"
+          az network nic show -g "$RG" -n "$NIC" --query '{id:id,ipConfigurations:ipConfigurations[].{name:name,privateIpAddress:privateIPAddress,publicIP:publicIPAddress.id,subnet:subnet.id},nsg:networkSecurityGroup.id}' -o json
+          echo "NSG_RULES_BEGIN"
+          az network nsg rule list -g "$RG" --nsg-name "$NSG" --query '[].{name:name,priority:priority,direction:direction,access:access,protocol:protocol,sourceAddressPrefix:sourceAddressPrefix,destinationPortRange:destinationPortRange}' -o json
+          echo "PUBLIC_IPS_BEGIN"
+          az network public-ip list -g "$RG" --query '[].{name:name,ipAddress:ipAddress,sku:sku.name,allocation:publicIPAllocationMethod}' -o json
+          echo "GUEST_READONLY_BEGIN"
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts 'set -eu; echo GUEST_INFO; uname -s; echo PORT_LISTENERS; ss -lntH | awk "{print \\$4}" | grep -E "(:22|:80|:443)$" | sort -u || :; echo SERVICE_STATE; for n in nginx httpd apache2 ssh sshd mariadb mysql; do x=$(systemctl is-active "$n" 2>/dev/null || :); case "$x" in active|activating) echo "$n=$x";; esac; done; echo SSHD_OPTIONS; if command -v sshd >/dev/null; then sshd -T 2>/dev/null | grep -E "^(passwordauthentication|permitrootlogin|pubkeyauthentication|kbdinteractiveauthentication) " || :; fi; echo FIREWALL_UFW; if command -v ufw >/dev/null; then ufw status 2>/dev/null | head -n 12 || :; fi; echo WEB_LOCAL_RESPONSE; for port in 80 443; do if command -v curl >/dev/null; then if [ "$port" = 80 ]; then curl -sS -I -m 6 -o /dev/null -w "http_local_code=%{http_code}\\n" -H "Host: ulfah.org" http://127.0.0.1/ || :; else curl -sS -I -m 6 -o /dev/null -w "https_local_code=%{http_code}\\n" --resolve ulfah.org:443:127.0.0.1 https://ulfah.org/ || :; fi; fi; done' --query 'value[0].message' -o tsv
+          echo "WEB_PRECHECK_COMPLETE"
+      - name: Clear Azure session
+        if: always()
+        run: az account clear >/dev/null 2>&1 || true
