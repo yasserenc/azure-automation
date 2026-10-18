@@ -37,7 +37,24 @@ jobs:
           echo "PUBLIC_IPS_BEGIN"
           az network public-ip list -g "$RG" --query '[].{name:name,ipAddress:ipAddress,sku:sku.name,allocation:publicIPAllocationMethod}' -o json
           echo "GUEST_READONLY_BEGIN"
-          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts 'set -eu; echo GUEST_INFO; uname -s; echo PORT_LISTENERS; ss -lntH | awk "{print \\$4}" | grep -E "(:22|:80|:443)$" | sort -u || :; echo SERVICE_STATE; for n in nginx httpd apache2 ssh sshd mariadb mysql; do x=$(systemctl is-active "$n" 2>/dev/null || :); case "$x" in active|activating) echo "$n=$x";; esac; done; echo SSHD_OPTIONS; if command -v sshd >/dev/null; then sshd -T 2>/dev/null | grep -E "^(passwordauthentication|permitrootlogin|pubkeyauthentication|kbdinteractiveauthentication) " || :; fi; echo FIREWALL_UFW; if command -v ufw >/dev/null; then ufw status 2>/dev/null | head -n 12 || :; fi; echo WEB_LOCAL_RESPONSE; for port in 80 443; do if command -v curl >/dev/null; then if [ "$port" = 80 ]; then curl -sS -I -m 6 -o /dev/null -w "http_local_code=%{http_code}\\n" -H "Host: ulfah.org" http://127.0.0.1/ || :; else curl -sS -I -m 6 -o /dev/null -w "https_local_code=%{http_code}\\n" --resolve ulfah.org:443:127.0.0.1 https://ulfah.org/ || :; fi; fi; done' --query 'value[0].message' -o tsv
+          cat > "$RUNNER_TEMP/guest-web-precheck.sh" <<'GUEST'
+          set -eu
+          echo LISTENERS_BEGIN
+          ss -lntH | grep -E '(:22|:80|:443)[[:space:]]' || :
+          echo NGINX_CONFIG_TEST
+          if command -v nginx >/dev/null; then nginx -t 2>&1 | tail -n 5 || :; fi
+          echo LISTENER_TEST
+          for port in 22 80 443; do
+            if timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/$port" 2>/dev/null; then echo "127.0.0.1:$port=open"; else echo "127.0.0.1:$port=closed"; fi
+          done
+          echo HTTP_LOCAL
+          curl --noproxy '*' --max-time 7 -sS -I -H 'Host: ulfah.org' http://127.0.0.1/ | head -n 10 || :
+          echo HTTPS_LOCAL_CERT_VERIFIED
+          curl --noproxy '*' --max-time 7 -sS -I --resolve ulfah.org:443:127.0.0.1 https://ulfah.org/ | head -n 10 || :
+          echo HTTPS_LOCAL_TLS_DIAGNOSTIC
+          timeout 6 openssl s_client -connect 127.0.0.1:443 -servername ulfah.org -brief < /dev/null 2>&1 | head -n 12 || :
+          GUEST
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts "$(cat "$RUNNER_TEMP/guest-web-precheck.sh")" --query 'value[0].message' -o tsv
           echo "WEB_PRECHECK_COMPLETE"
       - name: Clear Azure session
         if: always()
